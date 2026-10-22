@@ -1,4 +1,4 @@
-# luminaries
+# NetliveCoworkChannel
 
 独立 Java 21 / Spring Boot Channel 服务，提供平台适配、文本收发与显式人工应答，复用 NetliveCoworkPy 的会话 API。当前只接已有授权会话；配置文件管理连接、外部身份与会话白名单，不新增桌面页面。云端总体设计由 NetliveCoworkPy 的 `docs/云地协同方案/Channel接入.md` 维护，本仓库维护 Channel 实现、Java 测试及接入说明。
 
@@ -10,7 +10,7 @@
 mvn clean package
 # 设置本机管理密钥，不写进配置或提交到仓库
 $env:CHANNEL_ADMIN_TOKEN = '<至少32字符的随机值>'
-java -jar target/channel-service-0.1.0.jar --spring.config.additional-location=file:./application-local.yml
+java -jar target/netlivecowork-channel-0.1.0.jar --spring.config.additional-location=file:./application-local.yml
 ```
 
 将 `application-example.yml` 复制为已忽略的 `application-local.yml`，填写实际后端地址和已有会话 ID。`workspace-ref` 是配置中的空间标识/来源标签，不是文件路径；授权由该绑定明确列出的完整目标决定，不会自动放开同目录的其他会话。未 `/use` 时不自动选择或执行。
@@ -71,9 +71,9 @@ Invoke-RestMethod -Headers $headers http://127.0.0.1:17927/api/v1/channels/conne
 
 ```powershell
 mvn test
-# 在 luminaries 根目录先构建 jar，再切换到 Python 外壳执行联通测试
+# 在 NetliveCoworkChannel 根目录先构建 jar，再切换到 Python 外壳执行联通测试
 mvn package
-$env:NLC_TEST_CHANNEL_JAR = (Resolve-Path target/channel-service-0.1.0.jar).Path
+$env:NLC_TEST_CHANNEL_JAR = (Resolve-Path target/netlivecowork-channel-0.1.0.jar).Path
 Set-Location '<NetliveCoworkPy 工作目录>'
 .\.venv\Scripts\python.exe -m pytest tests/test_channel_java_e2e.py
 ```
