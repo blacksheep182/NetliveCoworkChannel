@@ -1,0 +1,7 @@
+/target/
+/data/
+/application-local.yml
+*.log
+.idea/
+.vscode/
+.codegraph/

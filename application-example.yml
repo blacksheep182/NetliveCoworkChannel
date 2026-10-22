@@ -1,0 +1,22 @@
+server:
+  address: 127.0.0.1
+  port: 17927
+channel:
+  admin-token: ${CHANNEL_ADMIN_TOKEN}
+  data-file: ./data/channel.db
+  backends:
+    - id: local
+      url: http://127.0.0.1:17926
+  connections:
+    - id: weixin-main
+      type: weixin
+      secret-file: ./data/weixin-main.json
+  bindings:
+    - id: my-weixin
+      connection-id: weixin-main
+      external-user-id: REPLACE_WITH_WEIXIN_USER_ID
+      conversation-id: REPLACE_WITH_WEIXIN_USER_ID
+      targets:
+        - backend-id: local
+          workspace-ref: project-a
+          session-id: REPLACE_WITH_EXISTING_SESSION_ID

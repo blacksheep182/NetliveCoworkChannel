@@ -1,0 +1,6 @@
+server:
+  address: 127.0.0.1
+  port: 17927
+channel:
+  admin-token: ${CHANNEL_ADMIN_TOKEN:}
+  data-file: ${CHANNEL_DATA_FILE:./data/channel.db}
