@@ -1,22 +1,107 @@
+# Channel 部署示例：复制为 application-local.yml 后按注释替换，
+# 用 --spring.config.additional-location=file:./application-local.yml 加载，不要提交本机文件。
+#
+# 联调（真实 Python 后端）：先在 NetliveCoworkPy 侧运行
+#   dev/channel_provision.py --uid <W3工号> --out data/w3-session-proof.txt
+# 它会给出两端逐项对齐的环境变量；本文件中的 backend-id/client-id/tenant/workspace
+# 与 receiver-id 必须与 Python 侧 NLC_CHANNEL_* 完全一致，token 三处同源。
 server:
   address: 127.0.0.1
   port: 17927
+
 channel:
   admin-token: ${CHANNEL_ADMIN_TOKEN}
   data-file: ./data/channel.db
-  backends:
-    - id: local
-      url: http://127.0.0.1:17926
-  connections:
-    - id: weixin-main
-      type: weixin
-      secret-file: ./data/weixin-main.json
-  bindings:
-    - id: my-weixin
-      connection-id: weixin-main
-      external-user-id: REPLACE_WITH_WEIXIN_USER_ID
-      conversation-id: REPLACE_WITH_WEIXIN_USER_ID
-      targets:
-        - backend-id: local
-          workspace-ref: project-a
-          session-id: REPLACE_WITH_EXISTING_SESSION_ID
+  tenant-ref: tenant-local
+  workspace-ref: workspace-local
+  # 生产建议关闭：先把外部身份绑定好，再让入口拒绝未知身份。
+  auto-provision-identities: false
+  master-key-id: local-key-1
+
+  l3:
+    sink-ref: l3-sink-1
+    sink-token: ${CHANNEL_L3_SINK_TOKEN}
+    files-supported: false
+    session-watch-supported: false
+    http-timeout-ms: 10000
+    forward-max-attempts: 8
+    forward-initial-backoff-ms: 2000
+    forward-max-backoff-ms: 300000
+    forward-lease-seconds: 60
+
+  # 后端服务登记：地址与凭据只在 L3 保存（INV-11）。
+  # credential-ref 是 Python 侧校验的服务 Bearer（env: 引用，与
+  # NLC_CHANNEL_SERVICE_TOKEN 同源）。backend-*/adapter-id 与 principals 构成
+  # W3 身份链：adapter-id 固定 w3-desktop-session；principal 的 session-proof-ref
+  # 必须指向“用户级会话凭据”文件（channel_provision.py 的输出），不是设备密钥。
+  services:
+    - service-ref: svc-local
+      label: 本机 Agent 服务
+      base-url: http://127.0.0.1:17926
+      access-type: LOCAL
+      credential-ref: env:NLC_CHANNEL_SERVICE_TOKEN
+      enabled: true
+      backend-id: netlivecowork-desktop
+      client-id: channel-local
+      backend-tenant-id: tenant-local
+      backend-workspace-id: workspace-local
+      adapter-id: w3-desktop-session
+      principals:
+        - principal-ref: user-REPLACE_WITH_W3_UID
+          subject-issuer: w3
+          subject: REPLACE_WITH_W3_UID
+          # 使用 channel_provision.py 输出的绝对路径（示例中请替换该路径）。
+          session-proof-ref: file:C:/REPLACE_WITH_ABSOLUTE_PATH/w3-session-proof.txt
+
+  # 逻辑目标登记：targetRef 固定代表确定的服务与会话资源身份；
+  # 后端重建数据后必须递增 resource-epoch，旧目标不再可派发（INV-51）。
+  # owner-principal-ref 只是受控种子：真实授权来自后端 facts 归属（v2.11 §2.4），
+  # 需与 principal-ref 一致才会即时可用，否则等 facts 首次同步落库。
+  targets:
+    - target-ref: target-session-a
+      service-ref: svc-local
+      session-id: REPLACE_WITH_EXISTING_SESSION_ID
+      resource-epoch: 1
+      label: 报表助手
+      agent-ref: null
+      capabilities: []
+      availability: ONLINE
+      owner-principal-ref: user-REPLACE_WITH_W3_UID
+      binding-revision: 1
+      enabled: true
+
+  # 后端事件回传接收端：callback 三件套（receiver-id/callback-url/
+  # callback-auth-binding-ref）必须与 Python 侧 NLC_CHANNEL_RECEIVER_* 一致，
+  # 否则 sink 登记会被后端拒绝；token 与 l3.sink-token 同源。
+  sinks:
+    - sink-ref: l3-sink-1
+      service-ref: svc-local
+      token: ${CHANNEL_L3_SINK_TOKEN}
+      request-key: sink-register-1
+      expected-revision: 0
+      receiver-id: channel-l3
+      callback-url: http://127.0.0.1:17927/api/v1/l3/events
+      callback-auth-binding-ref: channel-callback
+
+  # 平台接入。settings 由 Adapter 自己解释；credentials 只放 secretRef，不放明文。
+  entries:
+    - entry-ref: weixin-main
+      name: 微信主账号
+      adapter-type: weixin
+      config-version: 1
+      account-binding-epoch: 1
+      enabled: false
+      expected-external-account-key: null
+      settings:
+        secretFile: ./data/weixin-main.json
+      credentials: {}
+    - entry-ref: web-local
+      name: 手机网页入口
+      adapter-type: web
+      config-version: 1
+      account-binding-epoch: 1
+      enabled: false
+      settings:
+        users:
+          alice: REPLACE_WITH_LONG_RANDOM_TOKEN
+      credentials: {}

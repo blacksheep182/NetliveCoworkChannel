@@ -1,0 +1,32 @@
+server:
+  address: 127.0.0.1
+  port: 17927
+
+spring:
+  application:
+    name: netlivecowork-channel
+  jackson:
+    default-property-inclusion: non_null
+
+channel:
+  # 管理端密钥：所有 /api/v1/channel/** 都要求 Authorization: Bearer <token>；未配置时拒绝管理请求。
+  admin-token: ${CHANNEL_ADMIN_TOKEN:}
+  data-file: ${CHANNEL_DATA_FILE:./data/channel.db}
+  tenant-ref: ${CHANNEL_TENANT_REF:tenant-local}
+  workspace-ref: ${CHANNEL_WORKSPACE_REF:workspace-local}
+  # 未绑定外部身份时是否自动签发最小内部主体；未知身份默认拒绝（INV-03）。
+  auto-provision-identities: ${CHANNEL_AUTO_PROVISION_IDENTITIES:true}
+  # 凭据保护：主密钥由环境变量提供（base64 32 字节），库里只存密文与 keyId（INV-57）。
+  master-key-id: ${CHANNEL_MASTER_KEY_ID:local-key-1}
+  l3:
+    sink-ref: l3-sink-1
+    # 后端回传接收端的共享令牌；未配置时后端事件一律拒绝。
+    sink-token: ${CHANNEL_L3_SINK_TOKEN:}
+    files-supported: false
+    session-watch-supported: false
+    http-timeout-ms: 10000
+    forward-max-attempts: 8
+  services: []
+  targets: []
+  sinks: []
+  entries: []

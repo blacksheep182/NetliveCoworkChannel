@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CoWork · Channel</title>
+  <style>
+    :root { color-scheme: light dark; --bg0:#f0f4fa; --bg1:#fff; --bg2:#f5f8fe; --bg3:#eaf0fb;
+      --border:#dde6f3; --border2:#c6d5eb; --t1:#0f1f3d; --t2:#3d5a80; --blue:#2563eb;
+      --action:#2563eb; --action-text:#fff; --error:#b91c1c; --warning:#92400e; --waiting:#fffbeb;
+      --thumb:#8aa3bf; --track:transparent; scrollbar-color:var(--thumb) var(--track); scrollbar-width:thin; }
+    * { box-sizing:border-box; } [hidden] { display:none !important; }
+    body { margin:0; color:var(--t1); background:var(--bg0); font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    button,input,textarea { font:inherit; color:inherit; } button { cursor:pointer; min-height:40px; border:1px solid var(--border2);
+      background:var(--bg1); padding:8px 12px; border-radius:8px; } button:hover:enabled { background:var(--bg3); border-color:var(--blue); }
+    button:disabled { opacity:.5; cursor:default; } button.primary { background:var(--action); color:var(--action-text); border-color:var(--action); }
+    :focus-visible { outline:3px solid var(--blue); outline-offset:2px; } input,textarea { border:1px solid var(--border2);
+      background:var(--bg1); padding:10px 12px; border-radius:8px; width:100%; min-width:0; }
+    textarea { min-height:76px; max-height:180px; resize:none; border:0; background:transparent; outline-offset:-3px; }
+    h1,h2,p { margin:0; } h1 { font-size:17px; font-weight:600; } h2 { font-size:14px; font-weight:600; }
+    .app { display:grid; grid-template-columns:264px minmax(0,1fr); height:100dvh; min-height:460px; }
+    .sidebar { min-width:0; display:flex; flex-direction:column; border-right:1px solid var(--border); padding:24px 14px 16px; }
+    .brand { padding:0 10px 22px; font-size:18px; font-weight:650; letter-spacing:-.4px; }
+    .brand span { display:inline-grid; place-content:center; background:var(--blue); color:#fff; width:30px; height:30px; border-radius:8px; margin-right:9px; font-size:16px; }
+    .side-heading,.row { display:flex; align-items:center; gap:8px; } .side-heading { justify-content:space-between; padding:0 8px 8px; }
+    .small { min-height:34px; padding:4px 9px; font-size:12px; } .hint,.meta { font-size:12px; color:var(--t2); }
+    #session-count { padding:0 8px 12px; } #search { margin-bottom:10px; font-size:13px; background:var(--bg1); }
+    #session-list { display:flex; flex-direction:column; gap:4px; overflow-y:auto; flex:1; min-height:0; padding:3px; }
+    .session { display:block; text-align:left; width:100%; border:1px solid transparent; background:transparent; padding:10px 12px; }
+    .session[aria-current="true"] { background:var(--bg3); border-color:var(--border2); color:var(--blue); }
+    .session-name { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-weight:500; }
+    .session-state { display:block; color:var(--t2); font-size:11px; margin-top:3px; } .unread { float:right; font-size:11px; }
+    #workspace { width:100%; margin:6px 0; padding:8px; border:1px solid var(--border2); border-radius:8px; color:var(--t1); background:var(--bg1); }
+    #navigation-status { min-height:20px; margin-bottom:4px; }
+    .side-bottom { border-top:1px solid var(--border); padding:14px 8px 0; margin-top:14px; } .side-bottom button { width:100%; }
+    #connection { margin-top:8px; font-size:12px; text-align:center; color:var(--t2); }
+    main { min-width:0; min-height:0; display:flex; flex-direction:column; background:var(--bg1); }
+    .chat-header { min-height:88px; border-bottom:1px solid var(--border); padding:18px 28px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+    #current { overflow-wrap:anywhere; } #execution-status { color:var(--t2); font-size:12px; margin-top:5px; }
+    #execution-status.waiting { color:var(--warning); } .error { color:var(--error) !important; }
+    #task-notifications { position:fixed; right:16px; bottom:calc(var(--composer-height,200px) + 16px); z-index:10; width:min(360px,calc(100vw - 32px)); max-height:35vh; overflow:auto; }
+    .task-notice { border:1px solid var(--border); border-radius:8px; background:var(--bg1); color:var(--t1); padding:12px; margin-top:8px; }
+    .task-notice p { overflow-wrap:anywhere; margin:0 0 8px; } .task-notice button { margin-right:8px; }
+    #notice { background:var(--bg2); padding:8px 28px; font-size:12px; border-bottom:1px solid var(--border); }
+    .conversation { flex:1; min-height:0; overflow-y:auto; padding:28px max(24px,calc((100% - 820px)/2)); }
+    #empty { min-height:210px; display:grid; align-content:center; justify-items:center; gap:8px; color:var(--t2); text-align:center; }
+    #empty strong { font-size:20px; font-weight:500; color:var(--t1); } #empty p { max-width:390px; }
+    #log { display:flex; flex-direction:column; gap:22px; } .item { max-width:95%; overflow-wrap:anywhere; }
+    .interaction { border:1px solid var(--border2); border-radius:12px; padding:16px; width:100%; }
+    .interaction-form fieldset { border:0; padding:10px 0; margin:0; min-width:0; }
+    .interaction-form legend { font-weight:600; }
+    .interaction-form label { display:flex; align-items:flex-start; gap:9px; padding:6px 0; cursor:pointer; }
+    .interaction-form input[type=radio],.interaction-form input[type=checkbox] { width:18px; height:18px; margin:3px 0; flex-shrink:0; }
+    .interaction-form pre { white-space:pre-wrap; overflow-wrap:anywhere; background:var(--bg2); padding:10px; border-radius:6px; }
+    .interaction-form button { margin-right:8px; }.interaction-feedback { min-height:22px; font-size:12px; color:var(--t2); }
+    #history-controls { min-height:56px; margin-bottom:18px; }
+    .item .meta { margin-bottom:6px; } .item .body { white-space:pre-wrap; font-size:14px; line-height:1.8; }
+    .item.user { align-self:flex-end; max-width:85%; } .item.user .body { background:var(--bg3); border-radius:12px 12px 3px 12px; padding:10px 16px; }
+    .item.user .meta { text-align:right; } .item.error .body { border-left:3px solid var(--error); padding-left:12px; }
+    .item button { margin-top:8px; font-size:12px; } .composer-wrap { padding:12px 24px 18px; }
+    #compose { max-width:820px; margin:auto; border:1px solid var(--border2); border-radius:14px; padding:5px 7px 7px; background:var(--bg2); }
+    .compose-bottom { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 5px; }
+    #send { min-width:80px; } #status { max-width:820px; margin:7px auto 0; min-height:20px; font-size:12px; color:var(--t2); }
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+    dialog { width:min(480px,calc(100% - 32px)); border:1px solid var(--border); border-radius:16px; padding:24px; background:var(--bg1); color:var(--t1); }
+    dialog::backdrop { background:rgba(15,31,61,.35); } .dialog-heading { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+    dialog h2 { font-size:18px; } dialog label { display:block; margin:16px 0 5px; } .secret { display:flex; gap:8px; }
+    .secret button { flex-shrink:0; } .dialog-actions { display:flex; justify-content:flex-end; margin-top:20px; } #connection-feedback { min-height:22px; margin-top:10px; font-size:12px; }
+    details { border-top:1px solid var(--border); margin-top:20px; padding-top:14px; font-size:12px; color:var(--t2); } summary { cursor:pointer; } details p { margin-top:8px; }
+    ::-webkit-scrollbar { width:10px; height:10px; } ::-webkit-scrollbar-track { background:var(--track); }
+    ::-webkit-scrollbar-thumb { background:var(--thumb); border:3px solid var(--bg1); border-radius:8px; }
+    @media (prefers-color-scheme:dark) { :root { --bg0:#101827; --bg1:#172238; --bg2:#1b2942; --bg3:#233552; --border:#30435f;
+      --border2:#465d7e; --t1:#e8eef8; --t2:#b3c5dd; --blue:#7aa7ff; --action:#356fe2; --error:#fb9a9e; --warning:#f5c479; --waiting:#3b3220; --thumb:#657d9b; } }
+    @media (forced-colors:active) { :root { scrollbar-color:auto; } }
+    @media (max-width:680px) { .app { grid-template-columns:1fr; grid-template-rows:minmax(360px,44dvh) minmax(380px,1fr); min-height:100dvh; height:auto; }
+      .sidebar { padding:12px; border-right:0; border-bottom:1px solid var(--border); } .brand { display:none; }
+      .side-bottom { margin:6px 0 0; padding:6px 0 0; display:flex; align-items:center; gap:10px; } .side-bottom button { width:auto; }
+      #connection { margin:0; } #session-count { padding-bottom:5px; } #search { padding:6px 10px; margin-bottom:5px; }
+      main { height:56dvh; min-height:420px; } .chat-header { padding:12px 16px; min-height:76px; } .conversation { padding:20px 16px; }
+      .composer-wrap { padding:10px 12px 12px; } .compose-bottom .hint { font-size:10px; } #notice { padding:8px 16px; } }
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" aria-label="会话导航">
+    <div class="brand"><span aria-hidden="true">C</span>CoWork</div>
+    <div class="side-heading"><h2>我的会话</h2><button id="refresh" class="small" type="button" disabled>刷新</button></div>
+    <p id="session-count" class="hint" role="status">连接后显示已授权会话</p>
+    <label for="workspace">工作空间</label>
+    <select id="workspace" disabled aria-label="工作空间"><option value="">选择工作空间</option></select>
+    <button id="navigation-check" type="button" class="small" hidden disabled>查询切换结果</button>
+    <p id="navigation-status" class="hint" role="status"></p>
+    <label class="sr-only" for="search">搜索会话</label><input id="search" type="search" placeholder="搜索会话" disabled>
+    <nav id="session-list" aria-label="已授权会话"></nav>
+    <button id="more-sessions" type="button" class="small" hidden disabled>加载更多会话</button>
+    <div class="side-bottom"><button id="connection-settings" type="button" disabled>连接设置</button><div id="connection" role="status">尚未连接</div></div>
+  </aside>
+  <main>
+    <header class="chat-header"><div><h1 id="current">选择一个会话</h1><p id="execution-status" role="status">连接后，选择已授权的真实会话开始对话。</p></div><button id="check" class="small" type="button" disabled>刷新状态</button></header>
+<p id="notice" role="status" hidden></p>
+    <div id="inbox-gap" hidden><p role="status">部分收件已过期，重新同步将从仍保留的记录开始。</p><button id="inbox-resync" type="button" disabled>重新同步收件</button></div>
+    <div class="conversation" id="conversation">
+      <div id="empty"><strong id="empty-title">与 CoWork 继续对话</strong><p id="empty-description">连接后，这里会显示你在 CoWork 中授权的会话。</p></div>
+      <div id="history-controls" hidden><p id="history-status" class="hint" role="status"></p><button id="history-more" class="small" type="button" hidden disabled>加载更早消息</button><button id="history-retry" class="small" type="button" hidden disabled>重试加载记录</button></div>
+      <div id="log" role="log" aria-label="当前会话消息" aria-live="polite"></div>
+    </div>
+    <div class="composer-wrap">
+      <form id="compose" novalidate>
+        <label class="sr-only" for="text">消息</label><textarea id="text" class="resize-none" placeholder="先从左侧选择会话" aria-describedby="status execution-status" disabled></textarea>
+        <div class="compose-bottom"><span class="hint">Enter 发送 · Shift + Enter 换行</span><button id="send" class="primary" type="submit" disabled>发送</button></div>
+      </form>
+      <p id="status" role="status">选择会话后加载聊天记录。</p>
+    </div>
+  </main>
+</div>
+<dialog id="connection-dialog" aria-labelledby="connection-title">
+  <div class="dialog-heading"><h2 id="connection-title">连接 CoWork</h2><button id="close-settings" class="small" type="button" aria-label="关闭连接设置" disabled>关闭</button></div>
+  <p class="hint">使用本机提供的接入口和页面令牌建立连接。</p>
+  <form id="settings" novalidate>
+    <label for="entry">接入口</label><input id="entry" value="web-live" placeholder="例如 web-live" required aria-describedby="connection-feedback">
+    <label for="token">页面令牌</label><div class="secret"><input id="token" type="password" autocomplete="off" required aria-describedby="connection-feedback"><button id="toggle" type="button" aria-label="显示页面令牌" aria-pressed="false" disabled>显示</button></div>
+    <p id="connection-feedback" role="status"></p><div class="dialog-actions"><button id="connect" class="primary" type="submit">连接</button></div>
+  </form>
+  <details><summary>会话权限在哪里配置？</summary><p>在 CoWork 左下角“设置 → Channel 接入”勾选并保存允许访问的会话，再回到这里刷新列表。这里只显示当前用户获准访问的会话。</p><p>网页可按权限加载历史聊天记录；图片等内容会明确提示回 CoWork 查看。等待人工交互时，请回 CoWork 处理待办。</p></details>
+</dialog>
+<script src="/web.js" defer></script>
+<aside id="task-notifications" aria-label="任务完成提醒" aria-live="polite"></aside>
+</body>
+</html>

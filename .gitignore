@@ -1,7 +1,15 @@
-/target/
-/data/
-/application-local.yml
+# 构建产物
+target/
+# 本地运行数据（SQLite、凭证文件、日志）
+data/
 *.log
+# 本机配置与秘密
+application-local.yml
+# 编辑器
 .idea/
 .vscode/
+# CodeGraph 本地索引
 .codegraph/
+
+# Machine-local UI audit output.
+premium-audit.json

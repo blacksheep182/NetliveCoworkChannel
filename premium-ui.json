@@ -1,0 +1,28 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": [
+    "channel-app/src/main/resources/static"
+  ],
+  "locale": "zh-CN",
+  "canonicalMap": "DESIGN.md",
+  "requiredCapabilities": [
+    "Form",
+    "Scrollbar",
+    "Select/Listbox"
+  ],
+  "ownership": {
+    "Dialog": "native",
+    "Select/Listbox": "native"
+  },
+  "requiredCommands": [
+    "java",
+    "browser"
+  ],
+  "commands": {
+    "java": "mvn test",
+    "browser": "node --test channel-app/src/test/web/web.test.cjs"
+  },
+  "evidence": {
+    "failurePaths": "channel-app/src/test/web/web.test.cjs"
+  }
+}

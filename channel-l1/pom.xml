@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.netlivecowork</groupId>
+    <artifactId>netlivecowork-channel</artifactId>
+    <version>2.0.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>channel-l1</artifactId>
+  <name>channel-l1</name>
+  <description>L1 协议适配层：平台认证、协议转换、渲染与投递（只依赖公共契约，不得依赖 L2/L3 实现）</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.netlivecowork</groupId>
+      <artifactId>channel-contract</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.netlivecowork</groupId>
+      <artifactId>channel-infra</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>3.5.0</version>
+        <executions>
+          <execution>
+            <id>ban-layer-dependencies</id>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <bannedDependencies>
+                  <excludes>
+                    <exclude>com.netlivecowork:channel-l2</exclude>
+                    <exclude>com.netlivecowork:channel-l3</exclude>
+                    <exclude>com.netlivecowork:channel-app</exclude>
+                  </excludes>
+                  <message>INV-47：L1 只依赖公共契约与共享基础设施，不得依赖 L2/L3。</message>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
