@@ -51,6 +51,7 @@ final class TestBackend implements AutoCloseable {
     private final List<Call> calls = new CopyOnWriteArrayList<>();
     private volatile Handler handler;
     volatile boolean workspaces;
+    volatile boolean creation;
     volatile boolean interactions;
     final List<String> workspaceHeaders=new CopyOnWriteArrayList<>();
 
@@ -137,10 +138,10 @@ final class TestBackend implements AutoCloseable {
             return """
                 {"protocol_version":"1","profile":"personal-text-v1","backend_id":"%s",\
                 "features":{"resource_facts":true,"delegated_calls":true,"session_read":true,\
-                "message_submit":true,"request_lookup":true,"event_push":true,"event_replay":true,"session_catalog":true,"session_workspaces":%s,"interaction_response":%s},\
+                "message_submit":true,"request_lookup":true,"event_push":true,"event_replay":true,"session_catalog":true,"session_workspaces":%s,"interaction_response":%s,"session_create":%s},\
                 "limits":{},"retention":{"request_min_seconds":60,"acked_event_min_seconds":60},\
                 "auth":{"service":"bearer","delegation":"backend-adapter","adapter_id":"%s"}}
-                """.formatted(BACKEND_ID, workspaces, interactions, ADAPTER_ID);
+                """.formatted(BACKEND_ID, workspaces, interactions, creation, ADAPTER_ID);
         }
         if (path.startsWith(PREFIX + "/sessions/") && path.endsWith("/facts")) {
             String session = path.substring((PREFIX + "/sessions/").length(), path.length() - "/facts".length());

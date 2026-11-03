@@ -117,6 +117,22 @@ public final class BackendRegistry {
 
     // ---- targets ----------------------------------------------------------------------
 
+    /** Shared candidate mapping for catalog discovery and creation; registering it still requires live ownership facts. */
+    TargetRegistration discoveredTarget(com.netlivecowork.channel.contract.TrustedCall call,BackendService service,
+                                        String session,long epoch,String title) {
+        var existing=targetBySession(service.serviceRef(),session);
+        if(!service.tenantRef().equals(call.tenantRef()) || !service.workspaceRef().equals(call.workspaceRef())
+            || existing!=null && (!existing.tenantRef().equals(call.tenantRef()) || !existing.workspaceRef().equals(call.workspaceRef())))
+            throw new com.netlivecowork.channel.contract.ChannelContractException(com.netlivecowork.channel.contract.ChannelErrorCode.PERMISSION_DENIED,"Session belongs to a different resource domain");
+        if(existing!=null && !existing.enabled())return existing;
+        if(epoch<1 || existing!=null && existing.resourceEpoch()!=epoch)
+            throw new com.netlivecowork.channel.contract.ChannelContractException(com.netlivecowork.channel.contract.ChannelErrorCode.BINDING_CONFLICT,"Session incarnation changed; explicit resource registration is required");
+        String target=existing==null?"target-"+com.netlivecowork.channel.infra.Digests.sha256(String.join("\u0000",call.tenantRef(),call.workspaceRef(),service.serviceRef(),session,Long.toString(epoch))).substring(0,32):existing.targetRef();
+        return new TargetRegistration(target,call.tenantRef(),call.workspaceRef(),null,service.serviceRef(),session,epoch,title,
+            existing==null?null:existing.agentRef(),existing==null?List.of("text"):existing.capabilities(),TargetSummary.Availability.ONLINE,
+            existing==null?1:existing.bindingRevision(),true);
+    }
+
     public void upsertTarget(TargetRegistration target) {
         db.update("""
             INSERT INTO targets(target_ref, tenant_ref, workspace_ref, owner_principal_ref, service_ref,

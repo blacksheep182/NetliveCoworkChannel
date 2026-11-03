@@ -156,6 +156,9 @@ public final class WebAdapterInstance implements AdapterInstance, DeliveryPort, 
         return host.ingress().submit(resolution.admissionRef(), request).toCompletableFuture().join();
     }
 
+    public ChannelResponse createSession(String token,String requestId,String viewId,String workspace,String prompt,long revision) {
+        return submitOperation(token,requestId,viewId,new ChannelOperation.SessionCreate(workspace,prompt,revision));
+    }
     public ChannelResponse getSelection(String token,String requestId,String viewId) {
         return submitOperation(token,requestId,viewId,new ChannelOperation.SelectionGet());
     }

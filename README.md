@@ -138,6 +138,8 @@ npm run console
 
 - Chat：选择工作空间和已授权会话，加载历史、发送普通对话、处理人工交互。`/list` 在这里是普通聊天正文。
 - Console：先 `/list`，再 `/use 1`，然后普通消息或 `/status`。列表序号只来自本次展示的授权列表。
+  审批直接发送 `/approve` 或 `/reject`，拒绝无需理由；问题直接发送 `/answer 答案`（例如 `/answer 2` 选择第 2 个选项），系统关联当前选中会话的待处理项，无需填写内部编号。
+  有多条待处理项时先显示内容列表，再使用 `/approve #1`、`/reject #1` 或 `/answer #1 答案` 选择；`#1` 必须来自该次显示的列表，问题版本变化或已处理后旧编号失效。
 
 两个前端都是独立 Node HTTP 服务，分别代理 `/web/*` 到 Java。令牌保留在页面内存。Java 暂留 `/web.html` 内嵌兼容页面；独立前端仓库是后续维护入口。
 
@@ -207,3 +209,16 @@ mvn test package
 服务端会话事实和用户授权始终为准。文件、会话监听等能力按协商开关开放；示例默认关闭。原会话归属与 Channel owner 重复存储的设计问题已单独记录，当前保留隔离边界，后续另行讨论。
 
 更细的演进及评审记录见 [docs/implementation-notes.md](docs/implementation-notes.md)；其中早期状态不作为当前部署步骤。
+
+
+## 新建会话与工作空间创建授权
+
+Channel 支持 L1 `session.create` 到 Python 宿主的完整链路。创建接口是 `POST /web/{entryRef}/sessions/create`，通过 Bearer 页面令牌认证，正文为 `requestId`、`viewId`、`sessionWorkspaceRef`、`expectedBindingRevision`、`userPrompt`（首条消息）。Console 可以使用 `/workspaces`、`/workspace N`、`/new 首条消息`；Chat 的普通斜杠文本仍按消息处理。
+
+创建权由实际 Python 宿主配置：`NLC_CHANNEL_WORKSPACE_GRANTS_FILE` 指向私有 JSON，格式为 `{"version":1,"workspaces":[{"path":"D:/Projects/my-app","label":"我的项目","users":["actual-w3-uid"]}]}`。只允许精确 W3 用户在配置目录中创建；未配置时默认关闭。文件每次调用重读，空工作空间同样可开放。服务凭据、页面令牌、设备配对或工作空间引用本身都不能赋予创建权。
+
+公开工作空间列表合并已授权会话的空间与可创建的空空间，并通过 `canCreate` 区分。L3 独占逻辑引用到服务/宿主工作空间 ID 的映射，页面不接受真实目录或自报身份。宿主复用已有创建服务及当前 Electron 登录令牌中的人员锚点。创建成功登记真实归属并开放新会话，首个任务通过已有事件/收件设施回传回复与完成状态。
+
+L2 在网络调用前持久登记原请求；L3 固定原服务、工作空间和后端幂等键；宿主在启动前持久领取固定会话 ID。未知结果只查询原键，不能换键重发。后端拒绝开始执行前的模板/模型错误可以明确结束为拒绝。创建后选择采用 CAS，迟到结果不覆盖用户的新选择。撤销创建授权阻止未来创建；已有会话访问权仍独立管理。
+
+完整配置与隔离 HTTP/连接器联调命令见 Python 宿主仓 `docs/channel-integration.md` 和 `tests/channel_http/channel_creation_e2e.py`。

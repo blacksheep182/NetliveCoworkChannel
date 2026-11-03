@@ -2,6 +2,7 @@ package com.netlivecowork.channel.contract;
 
 /** 规范指令类型。type 与 payload 可辨识联合一一对应（data-contracts.md §3、§4.2）。 */
 public enum CommandType {
+    SESSION_CREATE("session.create", CommandPayload.SessionCreate.class),
     INPUT_SUBMIT("input.submit", CommandPayload.InputSubmit.class),
     SELECTION_GET("selection.get", CommandPayload.SelectionGet.class),
     WORKSPACE_LIST("workspace.list", CommandPayload.WorkspaceList.class),

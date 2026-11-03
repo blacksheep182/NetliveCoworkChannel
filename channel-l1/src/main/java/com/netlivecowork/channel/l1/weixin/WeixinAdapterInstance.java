@@ -643,6 +643,27 @@ public final class WeixinAdapterInstance implements AdapterInstance, ConnectionP
             new VerifiedIngress.ExternalReplyTarget(group.isBlank()
                 ? VerifiedIngress.Audience.PERSONAL : VerifiedIngress.Audience.SHARED, conversation, protocolData),
             messageId, null);
+        String command = text.strip();
+        if (command.equals("/bind") || command.startsWith("/bind ")) {
+            try {
+                if (!group.isBlank()) throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,
+                    "Owner binding must be completed in a private Weixin message");
+                host.ingress().completeOwnerWeixinBinding(verified,
+                    command.length() > 6 ? command.substring(6).strip() : "")
+                    .toCompletableFuture().join();
+                return;
+            } catch (RuntimeException error) {
+                ChannelErrorCode code = failureCode(error);
+                if (code != null && permanentRejection(code)) {
+                    if (!recordDisposition(messageId, contentDigest, code))
+                        throw new WeixinProtocol.PlatformFailure(ChannelErrorCode.UNAVAILABLE, false,
+                            "weixin binding rejection could not be persisted");
+                    return;
+                }
+                throw new WeixinProtocol.PlatformFailure(ChannelErrorCode.UNAVAILABLE, false,
+                    "weixin binding outcome is unavailable");
+            }
+        }
         IngressResolution resolution;
         ChannelResponse response;
         try {

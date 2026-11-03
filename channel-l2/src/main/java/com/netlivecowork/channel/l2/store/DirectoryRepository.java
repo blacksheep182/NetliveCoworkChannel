@@ -195,6 +195,13 @@ public final class DirectoryRepository {
         return List.copyOf(result);
     }
 
+    public void rememberNavigationList(String scope, String kind, List<String> refs) {
+        db.update("""
+            INSERT INTO l2_navigation_lists(scope_ref,kind,items_json) VALUES(?,?,?)
+            ON CONFLICT(scope_ref,kind) DO UPDATE SET items_json=excluded.items_json
+            """, scope, kind, Json.write(Json.mapper().valueToTree(refs)));
+    }
+
     // ---- execution targets -----------------------------------------------------------
 
     public record TargetRow(String targetRef, String tenantRef, String workspaceRef, String agentRef,

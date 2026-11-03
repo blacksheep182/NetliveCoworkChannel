@@ -19,6 +19,15 @@ import java.util.concurrent.CompletionStage;
  * 不新增通用包装；L3 不修改已受理的 CommandPacket。
  */
 public interface BackendAccessPort {
+    default CompletionStage<List<com.netlivecowork.channel.contract.SessionWorkspace>> creationWorkspaces(TrustedCall call) {
+        return java.util.concurrent.CompletableFuture.completedFuture(List.of());
+    }
+    default CompletionStage<com.netlivecowork.channel.contract.SessionCreation.Created> createSession(
+            TrustedCall call,String requestKey,String workspace,String prompt,boolean lookupOnly) {
+        return java.util.concurrent.CompletableFuture.failedFuture(new com.netlivecowork.channel.contract.SessionCreation.NotStarted(
+            com.netlivecowork.channel.contract.ChannelErrorCode.UNSUPPORTED_CAPABILITY,"Session creation is unavailable"));
+    }
+
     default CompletionStage<com.netlivecowork.channel.contract.DeviceAccess.Ticket> issueDeviceEnrollment(
             com.netlivecowork.channel.contract.DeviceAccess.Authorization authorization) {
         return java.util.concurrent.CompletableFuture.failedFuture(new com.netlivecowork.channel.contract.ChannelContractException(

@@ -47,6 +47,7 @@ import java.util.function.Supplier;
 public final class SubmitService {
 
     private final NavigationService navigation;
+    private final SessionCreationService creation;
     private final Db db;
     private final Clock clock;
     private final L2Settings settings;
@@ -56,12 +57,15 @@ public final class SubmitService {
     private final CommandInterpreter interpreter;
     private final BackendDispatcher dispatcher;
     private final GrantService grants;
+    private final GroupWorkspaceGrantService groupGrants;
+    private final OwnerWeixinBindingService ownerWeixinBindings;
     private final com.netlivecowork.channel.contract.port.AdapterCatalog catalog;
 
     public SubmitService(Db db, Clock clock, L2Settings settings, DirectoryRepository directory,
                          RequestRepository requests, DeliveryRepository deliveries,
                          CommandInterpreter interpreter, BackendDispatcher dispatcher, GrantService grants,
-                         com.netlivecowork.channel.contract.port.AdapterCatalog catalog) {
+                         com.netlivecowork.channel.contract.port.AdapterCatalog catalog,
+                         GroupWorkspaceGrantService groupGrants,OwnerWeixinBindingService ownerWeixinBindings) {
         this.db = db;
         this.clock = clock;
         this.settings = settings;
@@ -71,8 +75,11 @@ public final class SubmitService {
         this.interpreter = interpreter;
         this.dispatcher = dispatcher;
         this.grants = grants;
+        this.groupGrants = groupGrants;
+        this.ownerWeixinBindings = ownerWeixinBindings;
         this.catalog = catalog;
         this.navigation = new NavigationService(db,directory,grants,dispatcher);
+        this.creation = new SessionCreationService(db,clock,directory,dispatcher,grants,requests,groupGrants);
     }
 
     /** 受理上下文：已校验归属的接入与 admission（admission 不代表业务授权通过，INV-08）。 */
@@ -96,6 +103,11 @@ public final class SubmitService {
             throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,
                 "reply target is outside the admission binding");
         }
+        DirectoryRepository.ScopeRow admittedScope = scopeRef == null ? null
+            : directory.scope(tenant, workspace, scopeRef);
+        if (admittedScope != null && admittedScope.shared()) {
+            return submitShared(entry,admission,request,scopeRef,replyTarget,admittedScope);
+        }
 
         String dedupeKey = dedupeKey(entry, admission, request.requestId());
         String requestDigest = Digests.sha256(Json.write(PacketJson.enc(request)));
@@ -108,9 +120,12 @@ public final class SubmitService {
             return replay(existing, request.requestId());
         }
 
+        if(creation.exists(entry,admission.callerRef(),request.requestId()) && !(request.operation() instanceof ChannelOperation.SessionCreate)
+            && !(request.operation() instanceof ChannelOperation.InputSubmit input && input.interpretation()==ChannelOperation.Interpretation.COMMAND_AWARE && input.content().stream().anyMatch(p->p instanceof ContentPart.Text text && text.text().strip().startsWith("/new "))))
+            throw new ChannelContractException(ChannelErrorCode.REQUEST_CONFLICT,"Request ID belongs to a session creation");
         CommandInterpreter.Interpreted interpreted = interpreter.interpret(tenant, workspace, scopeRef, request);
         ChannelOperation operation = interpreted.operation();
-        if ((operation instanceof ChannelOperation.SelectionGet || operation instanceof ChannelOperation.SessionGet || operation instanceof ChannelOperation.SessionList || operation instanceof ChannelOperation.WorkspaceList || operation instanceof ChannelOperation.WorkspaceSelect)
+        if ((operation instanceof ChannelOperation.SessionCreate || operation instanceof ChannelOperation.SelectionGet || operation instanceof ChannelOperation.SessionGet || operation instanceof ChannelOperation.SessionList || operation instanceof ChannelOperation.WorkspaceList || operation instanceof ChannelOperation.WorkspaceSelect)
             && AdapterQueryPolicy.access(catalog,entry)==com.netlivecowork.channel.contract.adapter.AdapterCapabilities.HistoryAccess.NONE)
             throw new ChannelContractException(ChannelErrorCode.UNSUPPORTED_CAPABILITY,"This adapter does not expose session queries");
         // No backend IO inside local()'s write transaction.
@@ -118,6 +133,10 @@ public final class SubmitService {
             operation instanceof ChannelOperation.WorkspaceList || operation instanceof ChannelOperation.WorkspaceSelect || operation instanceof ChannelOperation.SessionList
                 ? navigation.read(entry,admission.callerRef(),null)
                 : operation instanceof ChannelOperation.SessionSelect select ? navigation.read(entry,admission.callerRef(),select.targetRef()) : List.of();
+        if(operation instanceof ChannelOperation.SessionCreate create) {
+            requirePrivateScope(tenant,workspace,scopeRef);
+            return creation.submit(entry,admission,request,scopeRef,replyTarget,create,()->requireBindingCurrent(entry,admission),null);
+        }
         return switch (operation) {
             case ChannelOperation.SelectionGet get -> local(entry,admission,request,scopeRef,get,()-> {
                 requirePrivateScope(tenant,workspace,scopeRef);
@@ -139,11 +158,116 @@ public final class SubmitService {
                 () -> subscribe(entry, admission, create, scopeRef));
             case ChannelOperation.SubscriptionRemove remove -> local(entry, admission, request, scopeRef, remove,
                 () -> unsubscribe(tenant, workspace, remove, admission));
-            default -> backend(entry, admission, request, scopeRef, replyTarget, operation);
+            default -> backend(entry, admission, request, scopeRef, replyTarget, operation,false);
         };
     }
 
+    private ChannelResponse submitShared(EntryConfig entry,DirectoryRepository.AdmissionRow admission,
+                                         IngressRequest request,String scopeRef,String replyTarget,
+                                         DirectoryRepository.ScopeRow scope) {
+        if(!"weixin".equals(entry.adapterType()) || !"weixin-group".equals(scope.namespace())
+            || !"SHARED".equals(scope.audience()) || !entry.entryRef().equals(scope.entryRef())
+            || scope.accountBindingEpoch()!=entry.accountBindingEpoch()
+            || !"USER".equals(admission.identitySubjectKind()))
+            throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Verified group scope is required");
+        DirectoryRepository.DestinationRow destination=requireDestination(entry.tenantRef(),entry.workspaceRef(),replyTarget,entry.entryRef());
+        if(!"SHARED".equals(destination.audience()) || destination.accountBindingEpoch()!=entry.accountBindingEpoch()
+            || !scope.externalKey().equals(destination.protocolData().path("conversation").asText()))
+            throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Group reply destination does not match the verified scope");
+        var active=groupGrants.activeForScope(scopeRef);
+        if(active.isEmpty())throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Group workspace is not open");
+        String dedupe=dedupeKey(entry,admission,request.requestId());
+        String digest=Digests.sha256(Json.write(PacketJson.enc(request)));
+        var prior=requests.inboxByDedupe(dedupe);
+        if(prior!=null) {
+            if(!digest.equals(prior.requestDigest()))throw new ChannelContractException(ChannelErrorCode.REQUEST_CONFLICT,"Original group request changed");
+            return replay(prior,request.requestId());
+        }
+        var operation=interpreter.interpret(entry.tenantRef(),entry.workspaceRef(),scopeRef,request).operation();
+        if((operation instanceof ChannelOperation.SessionCreate || operation instanceof ChannelOperation.SessionList
+            || operation instanceof ChannelOperation.SessionGet || operation instanceof ChannelOperation.WorkspaceList
+            || operation instanceof ChannelOperation.WorkspaceSelect)
+            && AdapterQueryPolicy.access(catalog,entry)==com.netlivecowork.channel.contract.adapter.AdapterCapabilities.HistoryAccess.NONE)
+            throw new ChannelContractException(ChannelErrorCode.UNSUPPORTED_CAPABILITY,"Group adapter does not expose session queries");
+        GroupWorkspaceGrantService.Grant first=active.get(0);
+        return switch(operation) {
+            case ChannelOperation.WorkspaceList list -> local(entry,admission,request,scopeRef,list,()->{
+                var workspaces=groupGrants.activeForScope(scopeRef).stream()
+                    .map(g->new com.netlivecowork.channel.contract.SessionWorkspace(g.workspaceRef(),g.workspaceRef(),true)).toList();
+                navigation.remember(scopeRef,"workspace",workspaces.stream().map(com.netlivecowork.channel.contract.SessionWorkspace::sessionWorkspaceRef).toList());
+                return new OperationResult.WorkspaceList(workspaces,sharedSelection(entry,scopeRef,admission.callerRef()));
+            },first);
+            case ChannelOperation.WorkspaceSelect select -> {
+                var grant=groupGrants.active(scopeRef,select.sessionWorkspaceRef());
+                if(!groupGrants.current(grant))throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Workspace is not open to this group");
+                yield local(entry,admission,request,scopeRef,select,()->{
+                    var current=navigation.snapshot(entry,scopeRef);
+                    if(current.revision()!=select.expectedBindingRevision())throw NavigationService.conflict();
+                    if(!select.sessionWorkspaceRef().equals(current.sessionWorkspaceRef())
+                        && !directory.compareAndSetSelection(entry.tenantRef(),entry.workspaceRef(),scopeRef,
+                            select.sessionWorkspaceRef(),null,current.revision(),admission.callerRef()))throw NavigationService.conflict();
+                    return new OperationResult.WorkspaceSelect(sharedSelection(entry,scopeRef,admission.callerRef()));
+                },grant);
+            }
+            case ChannelOperation.SelectionGet get -> local(entry,admission,request,scopeRef,get,
+                ()->new OperationResult.SelectionGet(sharedSelection(entry,scopeRef,admission.callerRef())),first);
+            case ChannelOperation.SessionList list -> {
+                var metadata=groupMetadata(entry,scopeRef,first.ownerRef());
+                yield local(entry,admission,request,scopeRef,list,
+                    ()->sessionListResult(list,entry,scopeRef,first.ownerRef(),metadata),first);
+            }
+            case ChannelOperation.SessionSelect select -> {
+                var grant=groupGrants.forTarget(scopeRef,select.targetRef());
+                groupGrants.requireTarget(grant,scopeRef,select.targetRef());
+                var metadata=dispatcher.readSession(entry,grant.ownerRef(),select.targetRef());
+                yield local(entry,admission,request,scopeRef,select,()->{
+                    var priorSelection=navigation.snapshot(entry,scopeRef);
+                    if(priorSelection.revision()!=select.expectedBindingRevision())throw NavigationService.conflict();
+                    if(priorSelection.sessionWorkspaceRef()!=null
+                        && !priorSelection.sessionWorkspaceRef().equals(grant.workspaceRef()))throw NavigationService.conflict();
+                    if(metadata.workspace()==null || !grant.workspaceRef().equals(metadata.workspace().sessionWorkspaceRef()))
+                        throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Group session workspace changed");
+                    if(!directory.compareAndSetSelection(entry.tenantRef(),entry.workspaceRef(),scopeRef,
+                        grant.workspaceRef(),select.targetRef(),select.expectedBindingRevision(),admission.callerRef()))throw NavigationService.conflict();
+                    var selected=navigation.snapshot(entry,scopeRef);
+                    return new OperationResult.SessionSelect(scopeRef,select.targetRef(),selected.revision(),grant.workspaceRef());
+                },grant);
+            }
+            case ChannelOperation.SessionCreate create -> {
+                var grant=groupGrants.active(scopeRef,create.sessionWorkspaceRef());
+                if(!groupGrants.current(grant))throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Workspace is not open to this group");
+                yield creation.submit(entry,admission,request,scopeRef,replyTarget,create,
+                    ()->requireBindingCurrent(entry,admission),grant);
+            }
+            case ChannelOperation.SubscriptionCreate ignored -> throw new ChannelContractException(ChannelErrorCode.UNSUPPORTED_CAPABILITY,"Group subscriptions are unavailable");
+            case ChannelOperation.SubscriptionRemove ignored -> throw new ChannelContractException(ChannelErrorCode.UNSUPPORTED_CAPABILITY,"Group subscriptions are unavailable");
+            default -> backend(entry,admission,request,scopeRef,replyTarget,operation,true);
+        };
+    }
+
+    private com.netlivecowork.channel.contract.NavigationSelection sharedSelection(EntryConfig entry,String scopeRef,String sender) {
+        var selected=navigation.snapshot(entry,scopeRef);
+        String workspace=selected.sessionWorkspaceRef(),target=selected.targetRef();
+        var grant=workspace==null?null:groupGrants.active(scopeRef,workspace);
+        if(!groupGrants.current(grant))return new com.netlivecowork.channel.contract.NavigationSelection(scopeRef,null,null,selected.revision());
+        if(target!=null)try{groupGrants.requireTarget(grant,scopeRef,target);}
+            catch(ChannelContractException ignored){target=null;}
+        return new com.netlivecowork.channel.contract.NavigationSelection(scopeRef,workspace,target,selected.revision());
+    }
+
+    private List<com.netlivecowork.channel.contract.SessionSummary> groupMetadata(EntryConfig entry,String scopeRef,String owner) {
+        var result=new java.util.ArrayList<com.netlivecowork.channel.contract.SessionSummary>();
+        for(String target:groupGrants.targets(scopeRef)) {
+            var grant=groupGrants.forTarget(scopeRef,target);
+            if(grant==null || !groupGrants.current(grant))continue;
+            var item=dispatcher.readSession(entry,owner,target);
+            if(item.workspace()!=null && grant.workspaceRef().equals(item.workspace().sessionWorkspaceRef()))result.add(item);
+        }
+        return List.copyOf(result);
+    }
+
     public ChannelResponse lookup(EntryConfig entry, String callerRef, long epoch, String requestId) {
+        var created=creation.lookup(entry,callerRef,requestId);if(created!=null)return created;
         RequestRepository.InboxRow row = requests.inboxByRequest(entry.entryRef(), epoch, callerRef, requestId);
         if (row == null) {
             return new ChannelResponse.Unknown(requestId, null, ChannelError.of(
@@ -153,6 +277,9 @@ public final class SubmitService {
     }
 
     private ChannelResponse replay(RequestRepository.InboxRow row, String requestId) {
+        String groupScope=groupGrants.operationScope(row.operationRef());
+        if(groupScope!=null && !groupGrants.currentOperation(row.operationRef()))
+            return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Group workspace grant was revoked"));
         if (row.responseJson() != null) {
             ChannelResponse response = PacketJson.decChannelResponse(row.responseJson());
             if (response instanceof ChannelResponse.Accepted accepted
@@ -163,6 +290,33 @@ public final class SubmitService {
                     ReceiptPayload.AcceptedBy.AGENT);
             }
             if (response instanceof ChannelResponse.Completed completed) {
+                if(groupScope!=null) {
+                    var result=completed.result();
+                    if(result instanceof OperationResult.SessionList list)
+                        return new ChannelResponse.Completed(requestId,new OperationResult.SessionList(
+                            list.items().stream().filter(item->groupGrants.forTarget(groupScope,item.targetRef())!=null).toList(),
+                            list.nextCursor()));
+                    if(result instanceof OperationResult.WorkspaceList list) {
+                        var allowed=groupGrants.activeForScope(groupScope).stream().map(GroupWorkspaceGrantService.Grant::workspaceRef).toList();
+                        return new ChannelResponse.Completed(requestId,new OperationResult.WorkspaceList(
+                            list.items().stream().filter(item->allowed.contains(item.sessionWorkspaceRef())).toList(),
+                            safeGroupSelection(groupScope,list.selection())));
+                    }
+                    if(result instanceof OperationResult.SelectionGet selected)
+                        return new ChannelResponse.Completed(requestId,new OperationResult.SelectionGet(
+                            safeGroupSelection(groupScope,selected.selection())));
+                    if(result instanceof OperationResult.WorkspaceSelect selected)
+                        return new ChannelResponse.Completed(requestId,new OperationResult.WorkspaceSelect(
+                            safeGroupSelection(groupScope,selected.selection())));
+                    if(result instanceof OperationResult.SessionCreate created
+                        && groupGrants.forTarget(groupScope,created.session().targetRef())==null)
+                        return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Group session origin is unavailable"));
+                    if(row.status()!=RequestRepository.OperationStatus.LOCAL_DONE && !grants.current(row.operationRef()))
+                        return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Original owner authorization changed"));
+                    return response;
+                }
+                if(completed.result() instanceof OperationResult.SessionCreate create && !grants.canAct(row.tenantRef(),row.workspaceRef(),row.callerRef(),create.session().targetRef(),"target.read"))
+                    return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Created session access was revoked"));
                 if (completed.result() instanceof OperationResult.WorkspaceList list) {
                     var allowed=navigation.visibleWorkspaces(row.tenantRef(),row.workspaceRef(),row.callerRef());
                     var selection=list.selection();
@@ -184,8 +338,10 @@ public final class SubmitService {
                     return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Original workspace authorization was revoked"));
                 if (completed.result() instanceof OperationResult.SessionList list) {
                     return new ChannelResponse.Completed(requestId, new OperationResult.SessionList(
-                        list.items().stream().filter(item -> grants.canAct(row.tenantRef(), row.workspaceRef(),
-                            row.callerRef(), item.targetRef(), "target.read")).toList(), list.nextCursor()));
+                        list.items().stream().filter(item -> groupScope!=null
+                            ? groupGrants.forTarget(groupScope,item.targetRef())!=null
+                            : grants.canAct(row.tenantRef(), row.workspaceRef(),row.callerRef(), item.targetRef(), "target.read"))
+                            .toList(), list.nextCursor()));
                 }
                 if (row.status() != RequestRepository.OperationStatus.LOCAL_DONE && !grants.current(row.operationRef()))
                     return new ChannelResponse.Rejected(requestId, ChannelError.of(ChannelErrorCode.PERMISSION_DENIED,
@@ -196,9 +352,22 @@ public final class SubmitService {
         return new ChannelResponse.Accepted(requestId, row.operationRef(), null);
     }
 
+    private com.netlivecowork.channel.contract.NavigationSelection safeGroupSelection(String scope,
+            com.netlivecowork.channel.contract.NavigationSelection selection) {
+        if(selection==null)return null;
+        var grant=selection.sessionWorkspaceRef()==null?null:groupGrants.active(scope,selection.sessionWorkspaceRef());
+        if(!groupGrants.current(grant))return new com.netlivecowork.channel.contract.NavigationSelection(scope,null,null,selection.revision());
+        if(selection.targetRef()!=null && groupGrants.forTarget(scope,selection.targetRef())==null)
+            return new com.netlivecowork.channel.contract.NavigationSelection(scope,selection.sessionWorkspaceRef(),null,selection.revision());
+        return selection;
+    }
+
     private String dedupeKey(EntryConfig entry, DirectoryRepository.AdmissionRow admission, String requestId) {
-        return String.join("\u0000", entry.tenantRef(), entry.workspaceRef(), entry.entryRef(),
-            String.valueOf(entry.accountBindingEpoch()), admission.callerRef(), requestId);
+        return requestKey(entry,admission.callerRef(),requestId);
+    }
+
+    static String requestKey(EntryConfig entry,String caller,String requestId) {
+        return String.join("\u0000",entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),String.valueOf(entry.accountBindingEpoch()),caller,requestId);
     }
 
     // ---- 本地操作（L2 执行） ----------------------------------------------------------
@@ -350,6 +519,12 @@ public final class SubmitService {
     private ChannelResponse local(EntryConfig entry, DirectoryRepository.AdmissionRow admission,
                                   IngressRequest request, String scopeRef, ChannelOperation operation,
                                   Supplier<OperationResult> work) {
+        return local(entry,admission,request,scopeRef,operation,work,null);
+    }
+
+    private ChannelResponse local(EntryConfig entry, DirectoryRepository.AdmissionRow admission,
+                                  IngressRequest request, String scopeRef, ChannelOperation operation,
+                                  Supplier<OperationResult> work,GroupWorkspaceGrantService.Grant groupGrant) {
         String flowId = Ids.next("flow");
         String operationRef = Ids.next("op");
         String packetId = Ids.next("cmd");
@@ -357,6 +532,8 @@ public final class SubmitService {
         String requestDigest = Digests.sha256(Json.write(PacketJson.enc(request)));
         ChannelResponse response = db.tx(connection -> {
             requireBindingCurrent(entry, admission);
+            if(groupGrant!=null && !groupGrants.current(groupGrant))
+                throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Group workspace grant was revoked");
             var prior=requests.inboxByDedupe(dedupeKey);
             if(prior!=null) {
                 if(!prior.requestDigest().equals(requestDigest))throw new ChannelContractException(ChannelErrorCode.REQUEST_CONFLICT,"Request content changed");
@@ -378,6 +555,9 @@ public final class SubmitService {
                 Json.write(PacketJson.enc(projection)), 0, null, clock.instant(),
                 admission.identitySubjectKind(), admission.identitySubjectKey(),
                 admission.identityBindingRevision()));
+            if(groupGrant!=null)groupGrants.recordOperation(operationRef,groupGrant,
+                operation instanceof ChannelOperation.SessionSelect select?select.targetRef():null,
+                admission.identitySubjectKey(),type.name());
             return projection;
         });
         return response;
@@ -409,7 +589,7 @@ public final class SubmitService {
 
     private ChannelResponse backend(EntryConfig entry, DirectoryRepository.AdmissionRow admission,
                                     IngressRequest request, String scopeRef, String replyTarget,
-                                    ChannelOperation operation) {
+                                    ChannelOperation operation,boolean shared) {
         String tenant = entry.tenantRef();
         String workspace = entry.workspaceRef();
         CommandType type = CommandType.ofOperation(operation);
@@ -419,6 +599,7 @@ public final class SubmitService {
         String taskRef = null;
         CommandPayload payload;
         Long selectionRevision=null;
+        GroupWorkspaceGrantService.Grant groupGrant=null;
 
         switch (operation) {
             case ChannelOperation.InputSubmit submit -> {
@@ -430,17 +611,24 @@ public final class SubmitService {
                     throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,
                         "no target selected for this scope; use /use or pass an explicit target");
                 }
-                requireTarget(tenant, workspace, targetRef, admission.callerRef(), "input.submit");
-                requireTarget(tenant, workspace, targetRef, admission.callerRef(), "target.read");
+                if(shared) {
+                    groupGrant=groupGrants.forTarget(scopeRef,targetRef);
+                    groupGrants.requireTarget(groupGrant,scopeRef,targetRef);
+                }
+                String principal=shared?groupGrant.ownerRef():admission.callerRef();
+                requireTarget(tenant, workspace, targetRef, principal, "input.submit");
+                requireTarget(tenant, workspace, targetRef, principal, "target.read");
                 requireBoundCaller(admission.callerRef());
                 DirectoryRepository.DestinationRow destination = requireDestination(tenant, workspace,
                     replyTarget, entry.entryRef());
                 DirectoryRepository.ScopeRow scope = scopeRef == null
                     ? null : directory.scope(tenant, workspace, scopeRef);
-                if ("SHARED".equals(destination.audience())) {
+                if ("SHARED".equals(destination.audience()) && !shared) {
                     throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,
                         "shared delivery requires an explicit shared scope authorization");
                 }
+                if(shared && !"SHARED".equals(destination.audience()))
+                    throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Group delivery requires a group destination");
                 ChannelMessage message = new ChannelMessage(Ids.next("msg"), submit.content(),
                     submit.replyToMessageRef());
                 validateReferences(message);
@@ -450,7 +638,11 @@ public final class SubmitService {
                 payload = new CommandPayload.SessionList(list.agentRef(), list.page());
             case ChannelOperation.SessionGet get -> {
                 targetRef = get.targetRef();
-                requireTarget(tenant, workspace, targetRef, admission.callerRef(), "target.read");
+                if(shared) {
+                    groupGrant=groupGrants.forTarget(scopeRef,targetRef);
+                    groupGrants.requireTarget(groupGrant,scopeRef,targetRef);
+                }
+                requireTarget(tenant, workspace, targetRef, shared?groupGrant.ownerRef():admission.callerRef(), "target.read");
                 payload = new CommandPayload.SessionGet();
             }
             case ChannelOperation.TaskGet get -> {
@@ -485,19 +677,29 @@ public final class SubmitService {
                 "operation is not executed through the backend: " + operation.type());
         }
 
+        if(shared) {
+            if(groupGrant==null)groupGrant=groupGrants.forTarget(scopeRef,targetRef);
+            groupGrants.requireTarget(groupGrant,scopeRef,targetRef);
+            if(operation instanceof ChannelOperation.InteractionRespond respond
+                && (respond.payload().response() instanceof InteractionResponse.Approve
+                    || respond.payload().response() instanceof InteractionResponse.Reject)
+                && !ownerWeixinBindings.matches(entry,groupGrant.ownerRef(),admission.identitySubjectKey()))
+                throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Only the bound workspace owner may approve in a group");
+        }
+
         String operationRef = Ids.next("op");
         String packetId = Ids.next("cmd");
         PacketContext context = new PacketContext(tenant, workspace, targetRef, operationRef, taskRef);
         Correlation correlation = causationId == null ? Correlation.of(flowId)
             : new Correlation(flowId, causationId);
         CommandPacket packet = new CommandPacket("1", packetId, type, clock.instant(), correlation, context,
-            new Producer(Layer.L2, settings.componentRef()), Actor.of(admission.callerRef()), payload);
+            new Producer(Layer.L2, settings.componentRef()), Actor.of(shared?groupGrant.ownerRef():admission.callerRef()), payload);
 
         if (isWrite(type)) {
-            acceptForDispatch(entry, admission, request, packet, flowId, scopeRef, replyTarget, selectionRevision);
+            acceptForDispatch(entry, admission, request, packet, flowId, scopeRef, replyTarget, selectionRevision,groupGrant);
             return new ChannelResponse.Accepted(request.requestId(), operationRef, null);
         }
-        return queryNow(entry, admission, request, packet, flowId);
+        return queryNow(entry, admission, request, packet, flowId,groupGrant);
     }
 
     private boolean isWrite(CommandType type) {
@@ -505,15 +707,26 @@ public final class SubmitService {
             || type == CommandType.INTERACTION_RESPOND;
     }
 
+    private String groupAction(CommandPacket packet) {
+        if(packet.payload() instanceof CommandPayload.InteractionRespond respond) {
+            if(respond.payload().response() instanceof InteractionResponse.Approve)return "APPROVE";
+            if(respond.payload().response() instanceof InteractionResponse.Reject)return "REJECT";
+            return "ANSWER";
+        }
+        return packet.type().name();
+    }
+
     private void acceptForDispatch(EntryConfig entry, DirectoryRepository.AdmissionRow admission,
                                    IngressRequest request, CommandPacket packet, String flowId,
-                                   String scopeRef, String replyTarget, Long selectionRevision) {
+                                   String scopeRef, String replyTarget, Long selectionRevision,
+                                   GroupWorkspaceGrantService.Grant groupGrant) {
         String operationRef = packet.context().operationRef();
         String dedupeKey = dedupeKey(entry, admission, request.requestId());
         String digest = Digests.sha256(Json.write(PacketJson.enc(request)));
         db.tx(connection -> {
             // 受理事务内再次复验原绑定：与重绑屏障竞争时只有一个可核验先后顺序（SM07 §9.3）。
             requireBindingCurrent(entry, admission);
+            if(groupGrant!=null)groupGrants.requireTarget(groupGrant,scopeRef,packet.context().targetRef());
             if (packet.type()==CommandType.INPUT_SUBMIT && request.operation() instanceof ChannelOperation.InputSubmit input) {
                 var binding=directory.binding(entry.tenantRef(),entry.workspaceRef(),scopeRef);
                 // Explicit legacy writes remain supported only before a scope uses navigation.
@@ -526,6 +739,8 @@ public final class SubmitService {
                 }
             }
             grants.capture(packet);
+            if(groupGrant!=null)groupGrants.recordOperation(operationRef,groupGrant,packet.context().targetRef(),
+                admission.identitySubjectKey(),groupAction(packet));
             requests.saveInbox(new RequestRepository.InboxRow(dedupeKey, entry.tenantRef(),
                 entry.workspaceRef(), entry.entryRef(), entry.accountBindingEpoch(), admission.callerRef(),
                 request.requestId(), digest, packet.packetId(), operationRef, flowId, packet.type().name(),
@@ -561,13 +776,17 @@ public final class SubmitService {
     }
 
     private ChannelResponse queryNow(EntryConfig entry, DirectoryRepository.AdmissionRow admission,
-                                     IngressRequest request, CommandPacket packet, String flowId) {
+                                     IngressRequest request, CommandPacket packet, String flowId,
+                                     GroupWorkspaceGrantService.Grant groupGrant) {
         String operationRef = packet.context().operationRef();
         String dedupeKey = dedupeKey(entry, admission, request.requestId());
         String digest = Digests.sha256(Json.write(PacketJson.enc(request)));
         db.tx(connection -> {
         requireBindingCurrent(entry, admission);
+        if(groupGrant!=null)groupGrants.requireTarget(groupGrant,admission.scopeRef(),packet.context().targetRef());
         grants.capture(packet);
+        if(groupGrant!=null)groupGrants.recordOperation(operationRef,groupGrant,packet.context().targetRef(),
+            admission.identitySubjectKey(),groupAction(packet));
         requests.saveInbox(new RequestRepository.InboxRow(dedupeKey, entry.tenantRef(), entry.workspaceRef(),
             entry.entryRef(), entry.accountBindingEpoch(), admission.callerRef(), request.requestId(), digest,
             packet.packetId(), operationRef, flowId, packet.type().name(), Json.write(PacketJson.enc(packet)),

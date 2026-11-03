@@ -23,6 +23,8 @@ public final class L2Module implements AutoCloseable {
 
     private final com.netlivecowork.channel.contract.port.BackendAccessPort backendAccess;
     private final UserSessionAccessService sessionAccess;
+    private final OwnerWeixinBindingService ownerWeixinBindings;
+    private final GroupWorkspaceGrantService groupWorkspaceGrants;
     private final Clock managementClock;
     private final L2Settings settings;
     private final Clock clock;
@@ -54,15 +56,18 @@ public final class L2Module implements AutoCloseable {
         L2Schema.apply(db);
         this.entries = new EntryRepository(db, clock);
         this.directory = new DirectoryRepository(db, clock);
+        this.ownerWeixinBindings = new OwnerWeixinBindingService(db, clock, entries, directory);
         this.registrations = new com.netlivecowork.channel.l2.store.RegistrationRepository(db, clock);
         this.requests = new RequestRepository(db, clock);
         this.deliveries = new DeliveryRepository(db, clock);
         this.events = new EventRepository(db, clock);
         this.grants = new GrantService(db, clock);
         this.dispatcher = new BackendDispatcher(settings, clock, entries, directory, requests, backend, grants);
+        this.groupWorkspaceGrants = new GroupWorkspaceGrantService(db, clock, entries, directory, dispatcher,ownerWeixinBindings);
+        this.dispatcher.bindGroupGrants(groupWorkspaceGrants);
         CommandInterpreter interpreter = new CommandInterpreter(directory, requests, grants);
         this.submit = new SubmitService(db, clock, settings, directory, requests, deliveries, interpreter,
-            dispatcher, grants, catalog);
+            dispatcher, grants, catalog, groupWorkspaceGrants, ownerWeixinBindings);
         AdmissionService admission = new AdmissionService(clock, settings, entries, directory, requests, submit);
 
         HostFacilities[] hostHolder = new HostFacilities[1];
@@ -80,9 +85,10 @@ public final class L2Module implements AutoCloseable {
             (entryRef, event) -> managerHolder[0].handleEvent(entryRef, event), entries, directory, deliveries,
             backend, secretBox, dispositionFactory, sessionAccess,
             new SessionHistoryService(db,clock,catalog,backend,grants,requests),
-            durableInbox);
+            durableInbox, ownerWeixinBindings);
         hostHolder[0] = hosts;
         this.outbox = new OutboxService(settings, clock, entries, directory, deliveries, connections, grants);
+        this.outbox.bindGroupGrants(groupWorkspaceGrants);
         this.outbox.bindInbox(durableInbox);
         this.intake = new EventIntakeService(db, clock, settings, directory, requests, events, deliveries,
             backend, registrations);
@@ -139,6 +145,53 @@ public final class L2Module implements AutoCloseable {
     public com.netlivecowork.channel.contract.SessionAccess.Saved saveSessionAccess(com.netlivecowork.channel.contract.SessionAccess.Manager m,com.netlivecowork.channel.contract.SessionAccess.Save request) {return sessionAccess.save(managerCall(m),request,()->requireManager(m));}
     public com.netlivecowork.channel.contract.SessionAccess.Saved lookupSessionAccess(com.netlivecowork.channel.contract.SessionAccess.Manager m,String requestId) {return sessionAccess.lookup(managerCall(m),requestId,()->requireManager(m));}
 
+    public record WeixinChallenge(String token, java.time.Instant expiresAt) {}
+    public record WeixinBindingStatus(boolean bound, String weixinSubject) {}
+    public record WeixinBindingEntry(String entryRef, String name, boolean accountVerified, boolean bound) {}
+    public java.util.List<WeixinBindingEntry> ownerWeixinBindingEntries(com.netlivecowork.channel.contract.SessionAccess.Manager m) {
+        return ownerWeixinBindings.list(managerCall(m)).stream()
+            .map(item -> new WeixinBindingEntry(item.entryRef(), item.name(), item.accountVerified(), item.bound()))
+            .toList();
+    }
+    public WeixinChallenge beginOwnerWeixinBinding(com.netlivecowork.channel.contract.SessionAccess.Manager m, String entryRef) {
+        var result = ownerWeixinBindings.begin(managerCall(m), entryRef);
+        return new WeixinChallenge(result.token(), result.expiresAt());
+    }
+    public WeixinBindingStatus ownerWeixinBindingStatus(com.netlivecowork.channel.contract.SessionAccess.Manager m, String entryRef) {
+        var result = ownerWeixinBindings.status(managerCall(m), entryRef);
+        return new WeixinBindingStatus(result.bound(), result.weixinSubject());
+    }
+    public void revokeOwnerWeixinBinding(com.netlivecowork.channel.contract.SessionAccess.Manager m, String entryRef) {
+        ownerWeixinBindings.revoke(managerCall(m), entryRef);
+    }
+
+    public record ObservedGroup(String scopeRef, String entryRef, String groupId) {}
+    public record GroupWorkspaceGrant(String grantRef, String scopeRef, String entryRef,
+                                      String sessionWorkspaceRef, String ownerRef, long revision, boolean active) {}
+    public java.util.List<ObservedGroup> observedWeixinGroups(com.netlivecowork.channel.contract.SessionAccess.Manager m) {
+        return groupWorkspaceGrants.observedGroups(managerCall(m)).stream()
+            .map(group -> new ObservedGroup(group.scopeRef(), group.entryRef(), group.groupId())).toList();
+    }
+    public java.util.List<GroupWorkspaceGrant> groupWorkspaceGrants(com.netlivecowork.channel.contract.SessionAccess.Manager m) {
+        return groupWorkspaceGrants.grants(managerCall(m)).stream().map(this::grantView).toList();
+    }
+    public java.util.List<com.netlivecowork.channel.contract.SessionWorkspace> groupCreationWorkspaces(
+        com.netlivecowork.channel.contract.SessionAccess.Manager m,String entryRef) {
+        return groupWorkspaceGrants.availableWorkspaces(managerCall(m),entryRef);
+    }
+    public GroupWorkspaceGrant openGroupWorkspace(com.netlivecowork.channel.contract.SessionAccess.Manager m,
+                                                   String entryRef, String scopeRef, String sessionWorkspaceRef) {
+        return grantView(groupWorkspaceGrants.open(managerCall(m),entryRef,scopeRef,sessionWorkspaceRef));
+    }
+    public GroupWorkspaceGrant revokeGroupWorkspace(com.netlivecowork.channel.contract.SessionAccess.Manager m,
+                                                     String grantRef, long expectedRevision) {
+        return grantView(groupWorkspaceGrants.revoke(managerCall(m),grantRef,expectedRevision));
+    }
+    private GroupWorkspaceGrant grantView(GroupWorkspaceGrantService.Grant grant) {
+        return new GroupWorkspaceGrant(grant.grantRef(),grant.scopeRef(),grant.entryRef(),
+            grant.workspaceRef(),grant.ownerRef(),grant.revision(),grant.active());
+    }
+
     public com.netlivecowork.channel.contract.grant.GrantManagement.GrantManagementPort grantManagement() {
         return grants;
     }
@@ -146,6 +199,7 @@ public final class L2Module implements AutoCloseable {
     GrantService grants() {
         return grants;
     }
+    GroupWorkspaceGrantService groupGrants() { return groupWorkspaceGrants; }
 
     /** 管理展示投影：最近 N 条入站处置，不作为保留或去重依据（S70）。 */
     public java.util.List<com.netlivecowork.channel.contract.InboundDisposition> inboundDispositions(

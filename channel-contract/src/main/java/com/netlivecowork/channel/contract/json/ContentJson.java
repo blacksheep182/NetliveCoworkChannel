@@ -249,7 +249,10 @@ public final class ContentJson {
     public static InteractionPrompt decodePrompt(JsonNode node) {
         Json.onlyFields(node, "kind", "content", "operation", "allowedResponses", "questions");
         String kind = Json.text(node, "kind");
-        List<ContentPart> content = decodeContent(node.get("content"));
+        JsonNode contentNode = node.get("content");
+        // A prompt may carry its text in the questions or operation without an introductory paragraph.
+        List<ContentPart> content = contentNode != null && contentNode.isArray() && contentNode.isEmpty()
+            ? List.of() : decodeContent(contentNode);
         Set<InteractionPrompt.AllowedResponse> allowed = decodeAllowed(node.get("allowedResponses"));
         return switch (kind) {
             case "approval" -> {

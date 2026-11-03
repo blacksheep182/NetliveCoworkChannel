@@ -45,6 +45,108 @@ final class CoworkSessionAccessController {
             return saved(runtime.l2().lookupSessionAccess(manager,requestId));
         });
     }
+    @PostMapping("/weixin-bindings")
+    ResponseEntity<ObjectNode> beginWeixinBinding(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof,@RequestBody JsonNode body) {
+        return respond(()->{
+            Json.onlyFields(body,"entryRef");
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            var challenge=runtime.l2().beginOwnerWeixinBinding(manager,Json.text(body,"entryRef"));
+            return Json.obj().put("challenge","/bind "+challenge.token())
+                .put("expiresAt",challenge.expiresAt().toString());
+        });
+    }
+    @GetMapping("/weixin-bindings")
+    ResponseEntity<ObjectNode> weixinBindingEntries(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof) {
+        return respond(()->{
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            var result=Json.obj();var items=result.putArray("items");
+            for(var item:runtime.l2().ownerWeixinBindingEntries(manager))
+                items.add(Json.obj().put("entryRef",item.entryRef()).put("name",item.name())
+                    .put("accountVerified",item.accountVerified()).put("bound",item.bound()));
+            return result;
+        });
+    }
+    @GetMapping("/weixin-bindings/{entryRef}")
+    ResponseEntity<ObjectNode> weixinBindingStatus(@PathVariable String serviceRef,@PathVariable String entryRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof) {
+        return respond(()->{
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            var status=runtime.l2().ownerWeixinBindingStatus(manager,entryRef);
+            var result=Json.obj().put("bound",status.bound());
+            if(status.bound())result.put("weixinSubject",status.weixinSubject());
+            return result;
+        });
+    }
+    @DeleteMapping("/weixin-bindings/{entryRef}")
+    ResponseEntity<ObjectNode> revokeWeixinBinding(@PathVariable String serviceRef,@PathVariable String entryRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof) {
+        return respond(()->{
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            runtime.l2().revokeOwnerWeixinBinding(manager,entryRef);
+            return Json.obj().put("bound",false);
+        });
+    }
+    @GetMapping("/group-workspaces")
+    ResponseEntity<ObjectNode> groupWorkspaces(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof) {
+        return respond(()->{
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            var result=Json.obj();var groups=result.putArray("groups");var grants=result.putArray("grants");
+            for(var group:runtime.l2().observedWeixinGroups(manager))
+                groups.add(Json.obj().put("scopeRef",group.scopeRef()).put("entryRef",group.entryRef())
+                    .put("groupId",group.groupId()));
+            for(var grant:runtime.l2().groupWorkspaceGrants(manager))grants.add(grantJson(grant));
+            return result;
+        });
+    }
+    @GetMapping("/group-workspaces/entries/{entryRef}/workspaces")
+    ResponseEntity<ObjectNode> groupCreationWorkspaces(@PathVariable String serviceRef,@PathVariable String entryRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof) {
+        return respond(()->{
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            var result=Json.obj();var items=result.putArray("items");
+            for(var workspace:runtime.l2().groupCreationWorkspaces(manager,entryRef))
+                items.add(Json.obj().put("sessionWorkspaceRef",workspace.sessionWorkspaceRef())
+                    .put("label",workspace.label()));
+            return result;
+        });
+    }
+    @PostMapping("/group-workspaces")
+    ResponseEntity<ObjectNode> openGroupWorkspace(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof,@RequestBody JsonNode body) {
+        return respond(()->{
+            Json.onlyFields(body,"entryRef","scopeRef","sessionWorkspaceRef");
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            return grantJson(runtime.l2().openGroupWorkspace(manager,Json.text(body,"entryRef"),
+                Json.text(body,"scopeRef"),Json.text(body,"sessionWorkspaceRef")));
+        });
+    }
+    @DeleteMapping("/group-workspaces/{grantRef}")
+    ResponseEntity<ObjectNode> revokeGroupWorkspace(@PathVariable String serviceRef,@PathVariable String grantRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof,@RequestBody JsonNode body) {
+        return respond(()->{
+            Json.onlyFields(body,"expectedRevision");
+            if(!body.path("expectedRevision").isIntegralNumber()||!body.path("expectedRevision").canConvertToLong())
+                throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"Expected group grant revision is required");
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            return grantJson(runtime.l2().revokeGroupWorkspace(manager,grantRef,body.path("expectedRevision").asLong()));
+        });
+    }
+    private ObjectNode grantJson(com.netlivecowork.channel.l2.L2Module.GroupWorkspaceGrant grant) {
+        return Json.obj().put("grantRef",grant.grantRef()).put("scopeRef",grant.scopeRef())
+            .put("entryRef",grant.entryRef()).put("sessionWorkspaceRef",grant.sessionWorkspaceRef())
+            .put("ownerRef",grant.ownerRef()).put("revision",grant.revision()).put("active",grant.active());
+    }
     private ObjectNode saved(SessionAccess.Saved saved) {
         var body=Json.obj().put("status","committed").put("requestId",saved.requestId()).put("revision",saved.revision());body.set("targetRefs",Json.mapper().valueToTree(saved.targetRefs()));return body;
     }

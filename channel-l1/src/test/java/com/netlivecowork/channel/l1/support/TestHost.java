@@ -35,6 +35,8 @@ public final class TestHost {
 
     public final String entryRef;
     public final List<VerifiedIngress> resolved = Collections.synchronizedList(new ArrayList<>());
+    public final List<VerifiedIngress> ownerBindings = Collections.synchronizedList(new ArrayList<>());
+    public final List<String> ownerBindingTokens = Collections.synchronizedList(new ArrayList<>());
     public final List<IngressRequest> submitted = Collections.synchronizedList(new ArrayList<>());
     public final List<ConnectionEvent> events = Collections.synchronizedList(new ArrayList<>());
     public final Map<String, JsonNode> destinations = new ConcurrentHashMap<>();
@@ -99,6 +101,12 @@ public final class TestHost {
     }
 
     private final class RecordingIngress implements IngressPort {
+        @Override
+        public CompletionStage<Boolean> completeOwnerWeixinBinding(VerifiedIngress input, String token) {
+            ownerBindings.add(input);
+            ownerBindingTokens.add(token);
+            return CompletableFuture.completedFuture(true);
+        }
 
         @Override
         public CompletionStage<IngressResolution> resolve(VerifiedIngress input) {

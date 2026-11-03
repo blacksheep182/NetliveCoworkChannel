@@ -6,11 +6,15 @@ import java.util.List;
  * 操作结果。普通提交的同步结果不携带最终答案（INV-25）；interaction.respond 只在后端确认本次
  * 响应生效后表达 applied（INV-61）。
  */
-public sealed interface OperationResult permits OperationResult.InputSubmit, OperationResult.SessionList,
+public sealed interface OperationResult permits OperationResult.SessionCreate, OperationResult.InputSubmit, OperationResult.SessionList,
     OperationResult.SessionGet, OperationResult.SessionSelect, OperationResult.TaskGet, OperationResult.TaskCancel,
     OperationResult.SelectionGet, OperationResult.WorkspaceList, OperationResult.WorkspaceSelect, OperationResult.InteractionRespond, OperationResult.SubscriptionCreate, OperationResult.SubscriptionRemove {
 
     CommandType type();
+
+    record SessionCreate(SessionSummary session, NavigationSelection selection) implements OperationResult {
+        public CommandType type() { return CommandType.SESSION_CREATE; }
+    }
 
     record InputSubmit(String taskRef) implements OperationResult {
         public InputSubmit {

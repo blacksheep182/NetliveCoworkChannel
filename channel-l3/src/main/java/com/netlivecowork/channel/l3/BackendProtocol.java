@@ -77,6 +77,14 @@ final class BackendProtocol {
             r.backendId() + "/" + target.sessionId() + "/" + target.resourceEpoch() + "/" + revision,
             target.resourceEpoch(),revision,expiry);
     }
+    SessionCreationBackend creationBackend(BackendRegistry registry,String sink) {
+        return new SessionCreationBackend(db,clock,client,identities,registry,this,sink);
+    }
+    SessionWorkspace workspace(BackendService service,String id,String label,boolean canCreate) {
+        if(!id.matches("ws-[a-f0-9]{32}"))throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE,"Invalid workspace identity");
+        String ref="sws-"+com.netlivecowork.channel.infra.Digests.sha256(service.serviceRef()+"\u0000"+registration(service).backendId()+"\u0000"+id);
+        return new SessionWorkspace(ref,label,canCreate);
+    }
     OwnedSessionCatalog.Discovery discoverOwnedSessions(BackendRegistry registry, TrustedCall call)
             throws IOException, InterruptedException {
         return new OwnedSessionCatalog(client,identities,clock,registry,this).discover(call);

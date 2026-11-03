@@ -51,6 +51,20 @@ final class WebController {
             @RequestHeader(name="Authorization",required=false) String authorization) {
         return navigate(entryRef,body,authorization,"selectWorkspace");
     }
+    @PostMapping("/{entryRef}/sessions/create")
+    ResponseEntity<ObjectNode> create(@PathVariable String entryRef,@RequestBody JsonNode body,
+            @RequestHeader(name="Authorization",required=false)String authorization) {
+        var web=adapter(entryRef);if(web==null)return ResponseEntity.status(503).body(Json.obj().put("status","rejected"));
+        try {
+            Json.onlyFields(body,"requestId","viewId","sessionWorkspaceRef","userPrompt","expectedBindingRevision");
+            return ResponseEntity.ok(PacketJson.enc(web.createSession(pageToken(authorization,null),Json.text(body,"requestId"),Json.text(body,"viewId"),
+                Json.text(body,"sessionWorkspaceRef"),Json.text(body,"userPrompt"),Json.reqLong(body,"expectedBindingRevision"))));
+        }catch(SecurityException e){return unauthorized();}
+        catch(IllegalArgumentException | com.netlivecowork.channel.contract.ChannelContractException e){
+            return ResponseEntity.badRequest().body(Json.obj().put("status","rejected").set("error",Json.obj().put("code","INVALID_ARGUMENT").put("message","Provide a workspace and first message")));
+        }
+    }
+
     @PostMapping("/{entryRef}/sessions/select")
     ResponseEntity<ObjectNode> selectSession(@PathVariable String entryRef,@RequestBody JsonNode body,
             @RequestHeader(name="Authorization",required=false) String authorization) {

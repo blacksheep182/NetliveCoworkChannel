@@ -66,6 +66,7 @@ final class BackendAccessService implements com.netlivecowork.channel.contract.p
         return CompletableFuture.supplyAsync(()->dispatches.closeUnsent(command,call),executor);
     }
     private final BackendProtocol protocol;
+    private final SessionCreationBackend creation;
     private final java.util.concurrent.ConcurrentHashMap<String,OwnedSessionCatalog.Discovery> catalogs=new java.util.concurrent.ConcurrentHashMap<>();
     private final L3Settings settings;
     private final Clock clock;
@@ -84,6 +85,7 @@ final class BackendAccessService implements com.netlivecowork.channel.contract.p
                          DispatchStore dispatches, InteractionStore interactions, SessionWatchStore watches,
                          BackendTransport client, Executor executor, BackendProtocol protocol) {
         this.protocol = protocol;
+        this.creation = protocol.creationBackend(registry,settings.sinkRef());
         this.settings = settings;
         this.clock = clock;
         this.registry = registry;
@@ -95,6 +97,13 @@ final class BackendAccessService implements com.netlivecowork.channel.contract.p
         this.executor = executor;
         this.owner = DispatchStore.ownerTag();
         this.lease = Duration.ofSeconds(settings.forwardLeaseSeconds());
+    }
+
+    public CompletionStage<List<com.netlivecowork.channel.contract.SessionWorkspace>> creationWorkspaces(TrustedCall call) {
+        return CompletableFuture.supplyAsync(()->{try{return creation.workspaces(call);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE,"Workspace query interrupted");}catch(IOException e){throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE,"Workspace query unavailable");}},executor);
+    }
+    public CompletionStage<com.netlivecowork.channel.contract.SessionCreation.Created> createSession(TrustedCall call,String request,String workspace,String prompt,boolean lookupOnly) {
+        return CompletableFuture.supplyAsync(()->{try{return creation.create(call,request,workspace,prompt,lookupOnly);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new ChannelContractException(ChannelErrorCode.OUTCOME_UNKNOWN,"Query the original creation request");}catch(IOException e){throw new ChannelContractException(ChannelErrorCode.OUTCOME_UNKNOWN,"Query the original creation request");}},executor);
     }
 
     // ---- submit ---------------------------------------------------------------------
@@ -415,10 +424,7 @@ final class BackendAccessService implements com.netlivecowork.channel.contract.p
                 var value = Json.obj(snapshot,"workspace");
                 Json.onlyFields(value,"workspace_id","label");
                 String id = Json.text(value,"workspace_id");
-                if (!id.matches("ws-[a-f0-9]{32}")) throw new IllegalArgumentException("invalid workspace identity");
-                String ref = "sws-" + com.netlivecowork.channel.infra.Digests.sha256(
-                    resolved.service().serviceRef() + "\u0000" + protocol.registration(resolved.service()).backendId() + "\u0000" + id);
-                workspace = new com.netlivecowork.channel.contract.SessionWorkspace(ref, Json.text(value,"label"));
+                workspace = protocol.workspace(resolved.service(),id,Json.text(value,"label"),false);
             }
             String label = field(reply, "title");
             SessionSummary summary = new SessionSummary(resolved.target().targetRef(),

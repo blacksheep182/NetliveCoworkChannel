@@ -40,6 +40,7 @@ public final class EventIngestService {
             CREATE TABLE IF NOT EXISTS event_sink_registrations(
               sink_ref TEXT PRIMARY KEY, service_ref TEXT NOT NULL, revision INTEGER NOT NULL)
             """);
+        db.ddl("CREATE TABLE IF NOT EXISTS backend_creation_events(request_key TEXT PRIMARY KEY,service_ref TEXT NOT NULL,target_ref TEXT NOT NULL,operation_ref TEXT NOT NULL,sink_ref TEXT NOT NULL,sink_revision INTEGER NOT NULL,resource_epoch INTEGER NOT NULL)");
         this.dispatches = dispatches;
         this.events = new EventStore(db, clock, settings);
     }
@@ -137,6 +138,8 @@ public final class EventIngestService {
         }
         String requestKey = event.correlation() == null ? null : event.correlation().requestKey();
         String operationRef = dispatches.operationRefForRequest(sink.serviceRef(), target.sessionId(), requestKey);
+        if(operationRef==null)operationRef=db.queryOne("SELECT operation_ref FROM backend_creation_events WHERE request_key=? AND service_ref=? AND target_ref=? AND resource_epoch=? AND sink_ref=?",
+            r->r.getString(1),requestKey,sink.serviceRef(),target.targetRef(),target.resourceEpoch(),sinkRef);
         if (revision > 0 && revision < sink.revision()) {
             // A trusted path repair keeps the original receiver and request binding.
             // Past versions are admitted only for that exact durable dispatch, never
@@ -144,9 +147,10 @@ public final class EventIngestService {
             Dispatch original = dispatches.load(operationRef);
             Long originalRevision = db.queryOne("SELECT sink_revision FROM backend_request_bindings WHERE operation_ref=? AND sink_ref=?",
                 rs -> rs.getLong(1),operationRef,sinkRef);
-            if (original == null || original.resourceEpoch() != epoch
+            Long creationRevision=db.queryOne("SELECT sink_revision FROM backend_creation_events WHERE operation_ref=? AND sink_ref=? AND target_ref=? AND resource_epoch=?",r->r.getLong(1),operationRef,sinkRef,target.targetRef(),epoch);
+            if (creationRevision==null && (original == null || original.resourceEpoch() != epoch
                 || originalRevision == null || originalRevision != revision
-                || (original.phase() != Dispatch.Phase.SENT_UNKNOWN && original.phase() != Dispatch.Phase.AGENT_ACCEPTED)) {
+                || (original.phase() != Dispatch.Phase.SENT_UNKNOWN && original.phase() != Dispatch.Phase.AGENT_ACCEPTED)) || creationRevision!=null && creationRevision!=revision) {
                 return IngestResult.rejected(ChannelErrorCode.REQUEST_CONFLICT.error(
                     "past sink revision has no matching original transport binding"));
             }

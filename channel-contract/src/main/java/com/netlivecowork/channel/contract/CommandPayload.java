@@ -6,7 +6,7 @@ import java.util.Set;
  * 规范指令载荷（L2 创建）。入口 operation 与规范 command 是两个对象：targetRef/taskRef 从入口参数
  * 移入规范 context，群当前默认目标只在首次受理时解析（data-contracts.md §4.2）。
  */
-public sealed interface CommandPayload permits CommandPayload.InputSubmit, CommandPayload.SessionList,
+public sealed interface CommandPayload permits CommandPayload.SessionCreate, CommandPayload.InputSubmit, CommandPayload.SessionList,
     CommandPayload.SessionSelect, CommandPayload.SessionGet, CommandPayload.TaskGet, CommandPayload.TaskCancel,
     CommandPayload.InteractionRespond, CommandPayload.SubscriptionCreate, CommandPayload.SubscriptionRemove, CommandPayload.SelectionGet, CommandPayload.WorkspaceList, CommandPayload.WorkspaceSelect {
 
@@ -39,6 +39,8 @@ public sealed interface CommandPayload permits CommandPayload.InputSubmit, Comma
             Producer.requireText(scopeRef, "session.select.scopeRef");
         }
     }
+
+    record SessionCreate(String sessionWorkspaceRef,String userPrompt,long expectedBindingRevision) implements CommandPayload {}
 
     record SelectionGet() implements CommandPayload {}
     record WorkspaceList() implements CommandPayload {}

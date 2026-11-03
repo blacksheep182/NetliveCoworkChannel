@@ -7,12 +7,22 @@ import java.util.Set;
  * 入口操作（L1 → L2）。入口 operation 与规范 command 是两个对象：targetRef/taskRef
  * 在首次受理时进入规范 context，不由调用者追加字段（data-contracts.md §4.1）。
  */
-public sealed interface ChannelOperation permits ChannelOperation.InputSubmit, ChannelOperation.SessionList,
+public sealed interface ChannelOperation permits ChannelOperation.SessionCreate, ChannelOperation.InputSubmit, ChannelOperation.SessionList,
     ChannelOperation.SessionSelect, ChannelOperation.SessionGet, ChannelOperation.TaskGet,
     ChannelOperation.TaskCancel, ChannelOperation.InteractionRespond, ChannelOperation.SubscriptionCreate,
     ChannelOperation.SubscriptionRemove, ChannelOperation.SelectionGet, ChannelOperation.WorkspaceList, ChannelOperation.WorkspaceSelect {
 
     String type();
+
+    record SessionCreate(String sessionWorkspaceRef, String userPrompt, long expectedBindingRevision) implements ChannelOperation {
+        public SessionCreate {
+            Producer.requireText(sessionWorkspaceRef,"sessionWorkspaceRef");
+            Producer.requireText(userPrompt,"userPrompt");
+            if(userPrompt.length()>65536 || expectedBindingRevision<0) throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"Invalid session creation parameters");
+        }
+        public String type() { return "session.create"; }
+    }
+
 
     /** 普通输入。interpretation 只说明输入语义，不授权后端切换目标。 */
     record InputSubmit(String targetRef, Interpretation interpretation, List<ContentPart> content,

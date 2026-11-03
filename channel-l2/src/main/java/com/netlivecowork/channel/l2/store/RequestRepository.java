@@ -356,6 +356,17 @@ public final class RequestRepository {
             interactionRef);
     }
 
+    /** Only actionable items in the selected session; expired prompts never become command defaults. */
+    public List<InteractionRow> pendingInteractions(String tenantRef, String workspaceRef, String targetRef) {
+        Instant now = clock.instant();
+        return db.query("""
+            SELECT * FROM l2_interactions
+            WHERE tenant_ref=? AND workspace_ref=? AND target_ref=? AND status='PENDING'
+            ORDER BY created_at, interaction_ref
+            """, this::mapInteraction, tenantRef, workspaceRef, targetRef).stream()
+            .filter(row -> row.expiresAt() == null || row.expiresAt().isAfter(now)).toList();
+    }
+
     public InteractionRow interactionByBackend(String targetRef, String backendInteractionId) {
         return db.queryOne("""
             SELECT * FROM l2_interactions WHERE target_ref=? AND backend_interaction_id=?

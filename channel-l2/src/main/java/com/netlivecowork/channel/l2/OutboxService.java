@@ -48,6 +48,8 @@ public final class OutboxService {
     private final DeliveryRepository deliveries;
     private final AdapterDeliveryAccess adapters;
     private final GrantService grants;
+    private GroupWorkspaceGrantService groupGrants;
+    void bindGroupGrants(GroupWorkspaceGrantService groupGrants) { this.groupGrants=groupGrants; }
     private DurableInboxService inbox;
     void bindInbox(DurableInboxService inbox) { this.inbox=inbox; }
 
@@ -168,7 +170,10 @@ public final class OutboxService {
             return true;
         }
         // Complete relation must retain the original operation basis; new grants cannot revive it.
-        if (!grants.beginDelivery(row.deliveryId(), destination.callerRef())) {
+        boolean disclosure=destination.callerRef()!=null
+            ? grants.beginDelivery(row.deliveryId(), destination.callerRef())
+            : groupGrants!=null && groupGrants.currentDelivery(row.deliveryId(),grants);
+        if (!disclosure) {
             finish(row, owner, attemptNumber, DeliveryRepository.DeliveryStatus.PAUSED,
                 "original disclosure authorization is no longer valid");
             return true;

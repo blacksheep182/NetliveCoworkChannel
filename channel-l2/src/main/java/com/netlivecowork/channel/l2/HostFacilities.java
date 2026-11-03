@@ -54,12 +54,14 @@ public final class HostFacilities {
     private final UserSessionAccessService sessionAccess;
     private final SessionHistoryService history;
     private final DurableInboxService inbox;
+    private final OwnerWeixinBindingService ownerWeixinBindings;
 
     public HostFacilities(Clock clock, AdmissionService admission, EventSink events, EntryRepository entries,
                           DirectoryRepository directory, DeliveryRepository deliveries,
                           BackendAccessPort backend, SecretBox secretBox,
                           InboundDispositionFactory dispositions, UserSessionAccessService sessionAccess,
-                          SessionHistoryService history, DurableInboxService inbox) {
+                          SessionHistoryService history, DurableInboxService inbox,
+                          OwnerWeixinBindingService ownerWeixinBindings) {
         this.clock = clock;
         this.admission = admission;
         this.events = events;
@@ -72,6 +74,7 @@ public final class HostFacilities {
         this.sessionAccess = sessionAccess;
         this.history = history;
         this.inbox = inbox;
+        this.ownerWeixinBindings = ownerWeixinBindings;
     }
 
     public AdapterHost hostFor(EntryConfig entry, String adapterVersion) {
@@ -141,6 +144,14 @@ public final class HostFacilities {
                 return guard(() -> {
                     requireHostCurrent(entry, hostGeneration);
                     return admission.lookup(entry, admissionRef, requestId);
+                });
+            }
+
+            @Override
+            public CompletionStage<Boolean> completeOwnerWeixinBinding(VerifiedIngress input, String token) {
+                return guard(() -> {
+                    requireHostCurrent(entry, hostGeneration);
+                    return ownerWeixinBindings.complete(entry, input, token);
                 });
             }
 

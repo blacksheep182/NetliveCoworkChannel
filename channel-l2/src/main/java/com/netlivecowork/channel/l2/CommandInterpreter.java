@@ -12,6 +12,7 @@ import com.netlivecowork.channel.contract.QuestionAnswer;
 import com.netlivecowork.channel.contract.QuestionItem;
 import com.netlivecowork.channel.contract.json.ContentJson;
 import com.netlivecowork.channel.contract.json.Json;
+import com.netlivecowork.channel.infra.Digests;
 import com.netlivecowork.channel.l2.store.DirectoryRepository;
 import com.netlivecowork.channel.l2.store.RequestRepository;
 import java.util.ArrayList;
@@ -23,9 +24,8 @@ import java.util.List;
  */
 public final class CommandInterpreter {
 
-    private static final String HELP = "supported commands: /workspaces, /workspace <number|sessionWorkspaceRef>, /list, /use <number|targetRef>, /status, "
-        + "/cancel <taskRef>, /approve <interactionRef>, /reject <interactionRef> [reason], "
-        + "/answer <interactionRef> <text>";
+    private static final String HELP = "supported commands: /new <first message>, /workspaces, /workspace <number|sessionWorkspaceRef>, /list, /use <number|targetRef>, /status, "
+        + "/cancel <taskRef>, /approve, /reject, /answer <text>";
 
     private final DirectoryRepository directory;
     private final RequestRepository requests;
@@ -60,6 +60,12 @@ public final class CommandInterpreter {
         String first = parts.length > 1 ? parts[1] : "";
         String rest = parts.length > 2 ? parts[2] : "";
         return switch (command) {
+            case "/new" -> {
+                var binding=directory.binding(tenantRef,workspaceRef,scopeRef);
+                if(binding==null || binding.sessionWorkspaceRef()==null || text.length()<=5)
+                    throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"Select a workspace with /workspaces and /workspace, then use /new <first message>");
+                yield new Interpreted(new ChannelOperation.SessionCreate(binding.sessionWorkspaceRef(),text.substring(5).strip(),binding.revision()),text);
+            }
             case "/workspaces" -> new Interpreted(new ChannelOperation.WorkspaceList(),text);
             case "/workspace" -> new Interpreted(workspace(tenantRef,workspaceRef,scopeRef,first),text);
             case "/list" -> new Interpreted(
@@ -67,12 +73,30 @@ public final class CommandInterpreter {
             case "/use" -> new Interpreted(select(tenantRef, workspaceRef, scopeRef, first, request.identity().callerRef()), text);
             case "/status" -> new Interpreted(status(tenantRef, workspaceRef, scopeRef), text);
             case "/cancel" -> new Interpreted(cancel(first, rest), text);
-            case "/approve" -> new Interpreted(respond(tenantRef, workspaceRef, first,
-                new InteractionResponse.Approve(null)), text);
-            case "/reject" -> new Interpreted(respond(tenantRef, workspaceRef, first,
-                new InteractionResponse.Reject(rest)), text);
+            case "/approve", "/reject" -> {
+                if (!rest.isBlank() && (!command.equals("/reject") || first.startsWith("#")
+                    || requests.interaction(first) == null)) throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,
+                    "请使用 " + command + "，有多条待处理项时使用 " + command + " #序号");
+                InteractionResponse response = command.equals("/approve")
+                    ? new InteractionResponse.Approve(null) : new InteractionResponse.Reject(rest);
+                var item = selectInteraction(tenantRef, workspaceRef, scopeRef, request.identity().callerRef(),
+                    first, response.kind());
+                yield new Interpreted(new ChannelOperation.InteractionRespond(
+                    new InteractionRespondPayload(item.interactionRef(), item.revision(), response)), text);
+            }
             case "/answer" -> {
-                InteractionRespondPayload payload = answer(tenantRef, workspaceRef, first, rest);
+                String selector = "";
+                String answerText = text.substring(command.length()).strip();
+                if (first.matches("#\\d+") || requests.interaction(first) != null) {
+                    selector = first;
+                    answerText = rest;
+                }
+                if (answerText.isBlank()) throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,
+                    "请使用 /answer 答案，例如 /answer 北京 或 /answer 2");
+                var item = selectInteraction(tenantRef, workspaceRef, scopeRef, request.identity().callerRef(),
+                    selector, "answer");
+                InteractionRespondPayload payload = new InteractionRespondPayload(item.interactionRef(),
+                    item.revision(), textAnswer(ContentJson.decodePrompt(Json.read(item.promptJson())), answerText));
                 yield new Interpreted(new ChannelOperation.InteractionRespond(payload), text);
             }
             default -> throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,
@@ -137,27 +161,58 @@ public final class CommandInterpreter {
         return new ChannelOperation.TaskCancel(taskRef, reason.isBlank() ? null : reason);
     }
 
-    private ChannelOperation respond(String tenantRef, String workspaceRef, String interactionRef,
-                                     InteractionResponse response) {
-        if (interactionRef.isBlank()) {
-            throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,
-                "command requires an interactionRef; " + HELP);
+    private RequestRepository.InteractionRow selectInteraction(String tenant, String workspace, String scope,
+                                                               String caller, String selector, String kind) {
+        // Keep explicit references compatible with earlier clients; normal commands need no internal IDs.
+        if (!selector.isBlank() && !selector.startsWith("#")) return interaction(tenant, workspace, selector);
+        var binding = scope == null ? null : directory.binding(tenant, workspace, scope);
+        if (binding == null || binding.targetRef() == null) throw new ChannelContractException(
+            ChannelErrorCode.INVALID_ARGUMENT, "请先用 /list 和 /use 选择要处理的会话");
+        String target = binding.targetRef();
+        if (!grants.canAct(tenant, workspace, caller, target, "target.read")) throw new ChannelContractException(
+            ChannelErrorCode.PERMISSION_DENIED, "当前会话的访问权限已失效，请重新选择会话");
+        var pending = requests.pendingInteractions(tenant, workspace, target).stream()
+            .filter(item -> ContentJson.decodePrompt(Json.read(item.promptJson())).allowedResponses().stream()
+                .anyMatch(allowed -> allowed.wire().equals(kind))).toList();
+        String choiceKind = "interaction:" + Digests.sha256(String.join("\u0000", caller, target, kind));
+        if (!selector.isBlank()) {
+            var choices = directory.navigationList(scope, choiceKind);
+            int number;
+            try { number = Integer.parseInt(selector.substring(1)); }
+            catch (NumberFormatException e) { number = 0; }
+            if (number < 1 || number > choices.size()) throw new ChannelContractException(
+                ChannelErrorCode.INVALID_ARGUMENT, "请先发送 /" + kind + (kind.equals("answer") ? " 答案" : "")
+                    + "，再从显示的待处理列表中选择编号");
+            String selected = choices.get(number - 1);
+            return pending.stream().filter(item -> interactionChoice(item).equals(selected)).findFirst()
+                .orElseThrow(() -> new ChannelContractException(ChannelErrorCode.INTERACTION_STALE,
+                    "这条待处理项已变化或已被处理，请重新发送命令获取当前列表"));
         }
-        RequestRepository.InteractionRow interaction = interaction(tenantRef, workspaceRef, interactionRef);
-        return new ChannelOperation.InteractionRespond(
-            new InteractionRespondPayload(interactionRef, interaction.revision(), response));
+        if (pending.isEmpty()) throw new ChannelContractException(ChannelErrorCode.INTERACTION_STALE,
+            kind.equals("answer") ? "当前会话没有等待回答的问题" : "当前会话没有等待处理的审批");
+        if (pending.size() == 1) return pending.get(0);
+        directory.rememberNavigationList(scope, choiceKind, pending.stream()
+            .map(this::interactionChoice).toList());
+        StringBuilder message = new StringBuilder("当前会话有多条待处理项，请选择：");
+        for (int i = 0; i < pending.size(); i++) {
+            InteractionPrompt prompt = ContentJson.decodePrompt(Json.read(pending.get(i).promptJson()));
+            var content = new ArrayList<>(prompt.content());
+            if (prompt instanceof InteractionPrompt.Questions questions)
+                questions.questions().forEach(question -> content.addAll(question.content()));
+            String label = content.stream().filter(part -> part instanceof ContentPart.Text)
+                .map(part -> ((ContentPart.Text) part).text()).reduce("", (a, b) -> a + " " + b)
+                .strip().replaceAll("\\s+", " ");
+            if (label.isBlank() && prompt instanceof InteractionPrompt.Approval approval && approval.operation() != null)
+                label = approval.operation().name();
+            if (label.isBlank()) label = kind.equals("answer") ? "等待回答的问题" : "等待处理的审批";
+            message.append("\n").append(i + 1).append(". ").append(label.length() > 160 ? label.substring(0, 160) + "…" : label);
+        }
+        message.append("\n使用 /").append(kind).append(" #1").append(kind.equals("answer") ? " 答案" : "");
+        throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, message.toString());
     }
 
-    private InteractionRespondPayload answer(String tenantRef, String workspaceRef, String interactionRef,
-                                             String text) {
-        if (interactionRef.isBlank() || text.isBlank()) {
-            throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,
-                "/answer requires <interactionRef> <text>");
-        }
-        RequestRepository.InteractionRow interaction = interaction(tenantRef, workspaceRef, interactionRef);
-        InteractionPrompt prompt = ContentJson.decodePrompt(Json.read(interaction.promptJson()));
-        InteractionResponse.Answer answer = textAnswer(prompt, text);
-        return new InteractionRespondPayload(interactionRef, interaction.revision(), answer);
+    private String interactionChoice(RequestRepository.InteractionRow item) {
+        return item.interactionRef() + ":" + item.revision();
     }
 
     private RequestRepository.InteractionRow interaction(String tenantRef, String workspaceRef,

@@ -189,6 +189,7 @@ public final class PacketJson {
             }
             case CommandPayload.SessionSelect select -> node.put("scopeRef", select.scopeRef())
                 .put("expectedBindingRevision", select.expectedBindingRevision());
+            case CommandPayload.SessionCreate create -> node.put("sessionWorkspaceRef",create.sessionWorkspaceRef()).put("userPrompt",create.userPrompt()).put("expectedBindingRevision",create.expectedBindingRevision());
             case CommandPayload.SelectionGet ignored -> {}
             case CommandPayload.WorkspaceList ignored -> {}
             case CommandPayload.WorkspaceSelect select -> node.put("scopeRef",select.scopeRef())
@@ -235,6 +236,10 @@ public final class PacketJson {
                 Json.onlyFields(node, "scopeRef", "expectedBindingRevision");
                 yield new CommandPayload.SessionSelect(Json.text(node, "scopeRef"),
                     Json.reqLong(node, "expectedBindingRevision"));
+            }
+            case SESSION_CREATE -> {
+                Json.onlyFields(node,"sessionWorkspaceRef","userPrompt","expectedBindingRevision");
+                yield new CommandPayload.SessionCreate(Json.text(node,"sessionWorkspaceRef"),Json.text(node,"userPrompt"),Json.reqLong(node,"expectedBindingRevision"));
             }
             case SELECTION_GET -> { Json.onlyFields(node); yield new CommandPayload.SelectionGet(); }
             case WORKSPACE_LIST -> { Json.onlyFields(node); yield new CommandPayload.WorkspaceList(); }
@@ -554,6 +559,7 @@ public final class PacketJson {
                     node.put("nextCursor", list.nextCursor());
                 }
             }
+            case OperationResult.SessionCreate create -> {node.set("session",enc(create.session()));node.set("selection",enc(create.selection()));}
             case OperationResult.WorkspaceList list -> {
                 var items = node.putArray("items"); list.items().forEach(item -> items.add(enc(item)));
                 node.set("selection",enc(list.selection()));
@@ -578,7 +584,7 @@ public final class PacketJson {
     }
 
     public static ObjectNode enc(com.netlivecowork.channel.contract.SessionWorkspace workspace) {
-        return Json.obj().put("sessionWorkspaceRef",workspace.sessionWorkspaceRef()).put("label",workspace.label());
+        return Json.obj().put("sessionWorkspaceRef",workspace.sessionWorkspaceRef()).put("label",workspace.label()).put("canCreate",workspace.canCreate());
     }
     public static ObjectNode enc(com.netlivecowork.channel.contract.NavigationSelection selection) {
         return Json.obj().put("scopeRef",selection.scopeRef()).put("sessionWorkspaceRef",selection.sessionWorkspaceRef())
@@ -590,8 +596,8 @@ public final class PacketJson {
             Json.optText(node,"targetRef"),Json.reqLong(node,"revision"));
     }
     private static com.netlivecowork.channel.contract.SessionWorkspace decWorkspace(JsonNode node) {
-        Json.onlyFields(node,"sessionWorkspaceRef","label");
-        return new com.netlivecowork.channel.contract.SessionWorkspace(Json.text(node,"sessionWorkspaceRef"),Json.text(node,"label"));
+        Json.onlyFields(node,"sessionWorkspaceRef","label","canCreate");
+        return new com.netlivecowork.channel.contract.SessionWorkspace(Json.text(node,"sessionWorkspaceRef"),Json.text(node,"label"),node.path("canCreate").asBoolean(false));
     }
     public static ObjectNode enc(SessionSummary summary) {
         ObjectNode node = Json.obj().put("targetRef", summary.targetRef()).put("label", summary.label())
@@ -1059,6 +1065,7 @@ public final class PacketJson {
             }
             case ChannelOperation.SessionSelect select -> node.put("targetRef", select.targetRef())
                 .put("expectedBindingRevision", select.expectedBindingRevision());
+            case ChannelOperation.SessionCreate create -> node.put("sessionWorkspaceRef",create.sessionWorkspaceRef()).put("userPrompt",create.userPrompt()).put("expectedBindingRevision",create.expectedBindingRevision());
             case ChannelOperation.SelectionGet ignored -> {}
             case ChannelOperation.WorkspaceList ignored -> {}
             case ChannelOperation.WorkspaceSelect select -> node.put("sessionWorkspaceRef",select.sessionWorkspaceRef())
@@ -1105,6 +1112,10 @@ public final class PacketJson {
                 Json.onlyFields(node, "targetRef", "expectedBindingRevision", "type");
                 yield new ChannelOperation.SessionSelect(Json.text(node, "targetRef"),
                     Json.reqLong(node, "expectedBindingRevision"));
+            }
+            case "session.create" -> {
+                Json.onlyFields(node,"sessionWorkspaceRef","userPrompt","expectedBindingRevision");
+                yield new ChannelOperation.SessionCreate(Json.text(node,"sessionWorkspaceRef"),Json.text(node,"userPrompt"),Json.reqLong(node,"expectedBindingRevision"));
             }
             case "selection.get" -> { Json.onlyFields(node); yield new ChannelOperation.SelectionGet(); }
             case "workspace.list" -> { Json.onlyFields(node); yield new ChannelOperation.WorkspaceList(); }
@@ -1178,6 +1189,7 @@ public final class PacketJson {
             }
             case SELECTION_GET -> new OperationResult.SelectionGet(decSelection(Json.obj(node,"selection")));
             case WORKSPACE_SELECT -> new OperationResult.WorkspaceSelect(decSelection(Json.obj(node,"selection")));
+            case SESSION_CREATE -> new OperationResult.SessionCreate(decSession(Json.obj(node,"session")),decSelection(Json.obj(node,"selection")));
             case INPUT_SUBMIT -> new OperationResult.InputSubmit(Json.optText(node, "taskRef"));
             case SESSION_LIST -> new OperationResult.SessionList(decSessions(node), Json.optText(node, "nextCursor"));
             case SESSION_GET -> {

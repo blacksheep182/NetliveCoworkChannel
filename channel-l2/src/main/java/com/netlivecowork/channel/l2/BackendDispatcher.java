@@ -38,6 +38,8 @@ public final class BackendDispatcher {
     private final RequestRepository requests;
     private final BackendAccessPort backend;
     private final GrantService grants;
+    private GroupWorkspaceGrantService groupGrants;
+    void bindGroupGrants(GroupWorkspaceGrantService groupGrants) { this.groupGrants=groupGrants; }
     private EventIntakeService interactionIntake;
     void bindInteractionIntake(EventIntakeService intake) { this.interactionIntake=intake; }
     private final ExecutorService async = Executors.newVirtualThreadPerTaskExecutor();
@@ -52,6 +54,15 @@ public final class BackendDispatcher {
         this.requests = requests;
         this.backend = backend;
         this.grants = grants;
+    }
+
+    public List<com.netlivecowork.channel.contract.SessionWorkspace> creationWorkspaces(EntryConfig entry,String caller) {
+        return backend.creationWorkspaces(trustedCall(entry,caller)).toCompletableFuture().join();
+    }
+    public com.netlivecowork.channel.contract.SessionCreation.Created createSession(EntryConfig entry,String caller,String request,String workspace,String prompt,boolean lookupOnly) {
+        try { return backend.createSession(trustedCall(entry,caller),request,workspace,prompt,lookupOnly).toCompletableFuture().get(settings.deliveryTimeoutMs(),TimeUnit.MILLISECONDS); }
+        catch(InterruptedException e) { Thread.currentThread().interrupt();throw new java.util.concurrent.CompletionException(e); }
+        catch(Exception e) {throw new java.util.concurrent.CompletionException(e);}
     }
 
     /** 后台派发：只安排一次，重复调用无副作用（claim 保证）。 */
@@ -161,7 +172,8 @@ public final class BackendDispatcher {
                 row.operationRef());
             return;
         }
-        if (!grants.begin(row.operationRef(), () -> true)) {
+        if ((groupGrants!=null && !groupGrants.currentOperation(row.operationRef()))
+            || !grants.begin(row.operationRef(), () -> true)) {
             requests.updateInbox(RequestRepository.OperationStatus.REJECTED,
                 Json.write(PacketJson.enc(new ChannelResponse.Rejected(row.requestId(),
                     ChannelError.of(ChannelErrorCode.PERMISSION_DENIED, "original authorization is no longer valid")))), row.operationRef());
@@ -256,7 +268,8 @@ public final class BackendDispatcher {
     public ChannelResponse dispatchQuery(EntryConfig entry, String callerRef, CommandPacket packet,
                                          String requestId) {
         String operationRef = packet.context().operationRef();
-        if (!grants.begin(operationRef, () -> requests.claimDispatch(operationRef))) {
+        if ((groupGrants!=null && !groupGrants.currentOperation(operationRef))
+            || !grants.begin(operationRef, () -> requests.claimDispatch(operationRef))) {
             RequestRepository.InboxRow current = requests.inboxByOperation(operationRef);
             return current != null && current.responseJson() != null
                 ? PacketJson.decChannelResponse(current.responseJson())
@@ -270,12 +283,12 @@ public final class BackendDispatcher {
         } catch (Exception e) {
             receipt = unknownReceipt(packet);
         }
-        if (!grants.current(operationRef)) return new ChannelResponse.Rejected(requestId,
+        if (!grants.current(operationRef) || groupGrants!=null && !groupGrants.currentOperation(operationRef)) return new ChannelResponse.Rejected(requestId,
             ChannelError.of(ChannelErrorCode.PERMISSION_DENIED, "authorization changed during query"));
         if(interactionIntake!=null && receipt.payload() instanceof ReceiptPayload.Completed completed
             && completed.result() instanceof com.netlivecowork.channel.contract.OperationResult.SessionGet get) {
             try {
-                var observed=backend.readInteractionEvents(packet.context().targetRef(),trustedCall(entry,callerRef)).toCompletableFuture()
+                var observed=backend.readInteractionEvents(packet.context().targetRef(),trustedCall(entry,packet.actor().principalRef())).toCompletableFuture()
                     .get(settings.deliveryTimeoutMs(),TimeUnit.MILLISECONDS);
                 if(!grants.current(operationRef))throw new IllegalStateException("Interaction read authorization changed");
                 for(var event:observed)interactionIntake.receiveEvent(event).toCompletableFuture().join();
@@ -286,7 +299,7 @@ public final class BackendDispatcher {
                 // Failed/unsupported recovery is absent, never an authoritative empty pending list.
             }
         }
-        if (!grants.current(operationRef))return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Authorization changed during interaction recovery"));
+        if (!grants.current(operationRef) || groupGrants!=null && !groupGrants.currentOperation(operationRef))return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Authorization changed during interaction recovery"));
         ChannelResponse response = switch (receipt.payload()) {
             case ReceiptPayload.Completed completed ->
                 new ChannelResponse.Completed(requestId, completed.result());

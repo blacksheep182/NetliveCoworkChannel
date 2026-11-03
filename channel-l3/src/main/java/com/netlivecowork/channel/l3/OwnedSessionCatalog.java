@@ -3,7 +3,6 @@ package com.netlivecowork.channel.l3;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.netlivecowork.channel.contract.*;
 import com.netlivecowork.channel.contract.json.Json;
-import com.netlivecowork.channel.infra.Digests;
 import com.netlivecowork.channel.infra.Ids;
 import java.io.IOException;
 import java.time.Clock;
@@ -52,17 +51,9 @@ final class OwnedSessionCatalog {
                     Json.onlyFields(item,"session_id","resource_epoch","revision","title","status","workspace_label");
                     String session=Json.text(item,"session_id"), title=Json.text(item,"title");
                     long epoch=Json.reqLong(item,"resource_epoch");
-                    var existing=registry.targetBySession(service.serviceRef(),session);
-                    if(existing!=null && (!existing.tenantRef().equals(call.tenantRef()) || !existing.workspaceRef().equals(call.workspaceRef())))
-                        throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Session belongs to a different resource domain");
-                    if(existing!=null && !existing.enabled()) continue;
-                    if(existing!=null && existing.resourceEpoch()!=epoch)
-                        throw new ChannelContractException(ChannelErrorCode.BINDING_CONFLICT,"Session incarnation changed; explicit resource registration is required");
-                    String target=existing==null?"target-"+Digests.sha256(String.join("\u0000",call.tenantRef(),call.workspaceRef(),service.serviceRef(),session,Long.toString(epoch))).substring(0,32):existing.targetRef();
-                    var registrationRow=new TargetRegistration(target,call.tenantRef(),call.workspaceRef(),null,
-                        service.serviceRef(),session,epoch,title,existing==null?null:existing.agentRef(),
-                        existing==null?List.of("text"):existing.capabilities(),TargetSummary.Availability.ONLINE,
-                        existing==null?1:existing.bindingRevision(),true);
+                    var registrationRow=registry.discoveredTarget(call,service,session,epoch,title);
+                    if(!registrationRow.enabled())continue;
+                    String target=registrationRow.targetRef();
                     TargetOwnership ownership=protocol.facts(service,registrationRow);
                     if(!call.principalRef().equals(ownership.ownerPrincipalRef()))
                         throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Catalog item ownership is not verified for the actual caller");

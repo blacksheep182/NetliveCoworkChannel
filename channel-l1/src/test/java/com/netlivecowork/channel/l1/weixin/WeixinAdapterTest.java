@@ -316,6 +316,41 @@ class WeixinAdapterTest {
     }
 
     @Test
+    void privateOwnerBindingUsesVerifiedSenderAndDoesNotSubmitAsPrompt() throws IOException {
+        writeSecret("tok-1", "bot-a");
+        WeixinAdapterInstance instance = instance(null);
+        instance.activate().toCompletableFuture().join();
+        updates.set(json.readTree("""
+            {"ret":0,"get_updates_buf":"next","msgs":[{"message_id":"binding-1",
+             "from_user_id":"alice","item_list":[{"type":1,"text_item":{"text":"/bind abc123"}}]}]}
+            """));
+
+        assertEquals(1_000L, instance.pollOnce());
+        assertEquals("weixin:bot-a:user:alice", host.ownerBindings.getFirst().externalSubject().key());
+        assertEquals(VerifiedIngress.Audience.PERSONAL, host.ownerBindings.getFirst().externalReplyTarget().audience());
+        assertEquals("abc123", host.ownerBindingTokens.getFirst());
+        assertTrue(host.submitted.isEmpty());
+        assertEquals("next", host.stateValue("cursor").path("cursor").asText());
+    }
+
+    @Test
+    void groupOwnerBindingCommandNeverCompletesOrSubmits() throws IOException {
+        writeSecret("tok-1", "bot-a");
+        WeixinAdapterInstance instance = instance(null);
+        instance.activate().toCompletableFuture().join();
+        updates.set(json.readTree("""
+            {"ret":0,"get_updates_buf":"next","msgs":[{"message_id":"binding-group",
+             "from_user_id":"alice","group_id":"room-1",
+             "item_list":[{"type":1,"text_item":{"text":"/bind abc123"}}]}]}
+            """));
+
+        assertEquals(1_000L, instance.pollOnce());
+        assertTrue(host.ownerBindings.isEmpty());
+        assertTrue(host.submitted.isEmpty());
+        assertEquals("PERMISSION_DENIED", host.dispositions.records.get("binding-group").code());
+    }
+
+    @Test
     void sharedDestinationRepliesToTheRegisteredGroup() throws IOException {
         writeSecret("tok-1", "bot-a");
         WeixinAdapterInstance instance = instance(null);

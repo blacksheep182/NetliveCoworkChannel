@@ -85,12 +85,17 @@ final class TestModule {
 
     TestModule() { this(true); }
 
-    TestModule(boolean authorizedFixture) {
+    TestModule(boolean authorizedFixture) { this(authorizedFixture,false); }
+
+    TestModule(boolean authorizedFixture, boolean weixinFixture) {
         this.authorizedFixture = authorizedFixture;
+        AdapterDescriptor weixinDescriptor = weixinFixture ? new AdapterDescriptor("weixin", "Weixin fixture",
+            "1.0.0", List.of("1"), List.of(1), Json.obj(), Json.obj(), adapter.describe().capabilities(),
+            java.util.Set.of(LifecycleMode.PASSIVE)) : null;
         this.catalog = new AdapterCatalog() {
             @Override
             public List<AdapterDescriptor> descriptors() {
-                return List.of(adapter.describe());
+                return weixinDescriptor==null?List.of(adapter.describe()):List.of(adapter.describe(),weixinDescriptor);
             }
 
             @Override
@@ -100,7 +105,7 @@ final class TestModule {
 
             @Override
             public AdapterDescriptor descriptor(String type) {
-                return "fake".equals(type) ? adapter.describe() : null;
+                return "fake".equals(type) ? adapter.describe() : "weixin".equals(type)?weixinDescriptor:null;
             }
         };
         this.module = new L2Module(db, clock, settings(), catalog, backend, null);
@@ -256,6 +261,14 @@ final class TestModule {
 
     /** 记录指令并返回可配置结果的 L3 替身。 */
     static final class RecordingBackend implements BackendAccessPort {
+        volatile java.util.List<com.netlivecowork.channel.contract.SessionWorkspace> creatable = java.util.List.of();
+        final java.util.List<Boolean> creationLookups = new java.util.concurrent.CopyOnWriteArrayList<>();
+        volatile java.util.function.Function<Boolean,CompletionStage<com.netlivecowork.channel.contract.SessionCreation.Created>> creator;
+        public CompletionStage<java.util.List<com.netlivecowork.channel.contract.SessionWorkspace>> creationWorkspaces(TrustedCall call) {return CompletableFuture.completedFuture(creatable);}
+        public CompletionStage<com.netlivecowork.channel.contract.SessionCreation.Created> createSession(TrustedCall call,String key,String workspace,String prompt,boolean lookupOnly) {
+            creationLookups.add(lookupOnly);return creator.apply(lookupOnly);
+        }
+
         final List<CommandPacket> commands = new CopyOnWriteArrayList<>();
         final java.util.concurrent.atomic.AtomicInteger submitCalls =
             new java.util.concurrent.atomic.AtomicInteger();
