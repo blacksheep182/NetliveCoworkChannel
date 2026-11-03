@@ -61,7 +61,7 @@ class QqAdapterTest {
         var settings=Json.obj().put("appId","app-1").put("secretFile",root.resolve("secret.json").toString());
         var config=new AdapterInstanceConfig("tenant","workspace","qq-main",1,1,1,"app-1",settings,List.of());
         var instance=new QqAdapterFactory().create(config,host.host());
-        instance.activate().toCompletableFuture().join();
+        assertNull(instance.activate().toCompletableFuture().join().externalAccountKey());
         instance.inbound("GROUP_AT_MESSAGE_CREATE",Json.read("""
             {"id":"msg-1","content":" /sessions","group_openid":"group-1",
              "author":{"member_openid":"member-1"}}

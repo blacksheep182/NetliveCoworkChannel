@@ -376,16 +376,14 @@ public final class ConnectionManager implements OutboxService.AdapterDeliveryAcc
             return;
         }
         String expected = entries.expectedExternalAccountKey(entry.entryRef());
-        if (expected == null || expected.isBlank()) {
-            entries.recordObservedAccount(entry.entryRef(), externalAccountKey);
-            return;
-        }
-        if (!expected.equals(externalAccountKey)) {
+        if (expected != null && !expected.isBlank() && !expected.equals(externalAccountKey)) {
             stopEntry(entry.entryRef(), StopReason.DISABLED);
             saveRuntime(entry.entryRef(), generation(entry.entryRef()),
                 EntryRepository.ConnectionState.BLOCKED, null, 0, null);
             log.warn("entry {} account mismatch; business is blocked", entry.entryRef());
+            return;
         }
+        entries.recordObservedAccount(entry.entryRef(), externalAccountKey);
     }
 
     private void saveRuntime(String entryRef, long generation, EntryRepository.ConnectionState state,

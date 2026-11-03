@@ -63,7 +63,8 @@ public final class QqAdapterInstance implements AdapterInstance, ConnectionPort,
             sessionId = saved.value().path("sessionId").asText(null);
             sessionSequence = saved.value().path("sequence").asLong(-1);
         }
-        return CompletableFuture.completedFuture(new ActivationResult(QqAdapterFactory.capabilities(),appId));
+        // The configured AppID is only verified after QQ accepts IDENTIFY or RESUME.
+        return CompletableFuture.completedFuture(new ActivationResult(QqAdapterFactory.capabilities(),null));
     }
     @Override public CompletionStage<Void> deactivate(StopReason reason) {
         active = false; closeSocket(); executor.shutdownNow();
