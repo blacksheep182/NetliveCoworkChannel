@@ -16,6 +16,7 @@ import com.netlivecowork.channel.contract.ChannelResponse;
 import com.netlivecowork.channel.contract.ContentPart;
 import com.netlivecowork.channel.contract.DeliveryAttempt;
 import com.netlivecowork.channel.contract.DeliveryReceipt;
+import com.netlivecowork.channel.contract.VerifiedIngress;
 import com.netlivecowork.channel.contract.adapter.ActivationResult;
 import com.netlivecowork.channel.contract.adapter.AdapterConfig;
 import com.netlivecowork.channel.contract.adapter.AdapterInstanceConfig;
@@ -274,6 +275,45 @@ class WeixinAdapterTest {
             .path("contextToken").asText());
         assertEquals(1, host.submitted.size());
         assertEquals("next", host.stateValue("cursor").path("cursor").asText());
+    }
+
+    @Test
+    void groupMessageKeepsTheSenderAndRoutesToTheGroup() throws IOException {
+        writeSecret("tok-1", "bot-a");
+        WeixinAdapterInstance instance = instance(null);
+        instance.activate().toCompletableFuture().join();
+        updates.set(json.readTree("""
+            {"ret":0,"get_updates_buf":"next","msgs":[{"message_id":"group-1",
+             "from_user_id":"alice","group_id":"room-1","context_token":"group-ctx",
+             "item_list":[{"type":1,"text_item":{"text":"hello group"}}]}]}
+            """));
+
+        assertEquals(1_000L, instance.pollOnce());
+
+        var ingress = host.resolved.get(0);
+        assertEquals("weixin:bot-a:user:alice", ingress.externalSubject().key());
+        assertEquals("weixin-group", ingress.externalScope().namespace());
+        assertEquals("room-1", ingress.externalScope().key());
+        assertEquals(VerifiedIngress.Audience.SHARED, ingress.externalReplyTarget().audience());
+        assertEquals("room-1", ingress.externalReplyTarget().protocolData().path("conversation").asText());
+        assertEquals("group-ctx", ingress.externalReplyTarget().protocolData().path("contextToken").asText());
+    }
+
+    @Test
+    void sharedDestinationRepliesToTheRegisteredGroup() throws IOException {
+        writeSecret("tok-1", "bot-a");
+        WeixinAdapterInstance instance = instance(null);
+        instance.activate().toCompletableFuture().join();
+        host.destinations.put("dest-room", Json.obj().put("conversation", "room-1")
+            .put("contextToken", "group-ctx"));
+
+        var receipt = instance.deliver(Packets.delivery(Packets.messageReady("group reply"),
+                "delivery-group", "entry-wx", "dest-room", 2, SOURCE_LABEL),
+            DeliveryAttempt.withTimeout(5_000)).toCompletableFuture().join();
+
+        assertInstanceOf(DeliveryReceipt.Accepted.class, receipt);
+        assertEquals("room-1", sendBody.get().path("msg").path("to_user_id").asText());
+        assertEquals("group-ctx", sendBody.get().path("msg").path("context_token").asText());
     }
 
     @Test

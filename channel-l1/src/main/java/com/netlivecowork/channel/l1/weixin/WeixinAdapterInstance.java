@@ -595,6 +595,7 @@ public final class WeixinAdapterInstance implements AdapterInstance, ConnectionP
     private void submitInbound(JsonNode message, String text) {
         String messageId = message.path("message_id").asText("");
         String sender = message.path("from_user_id").asText("");
+        String group = message.path("group_id").asText("");
         if (messageId.isBlank() || sender.isBlank()) {
             throw new WeixinProtocol.PlatformFailure(ChannelErrorCode.INVALID_ARGUMENT, false,
                 "weixin inbound message lacks identity");
@@ -625,7 +626,8 @@ public final class WeixinAdapterInstance implements AdapterInstance, ConnectionP
         }
 
         String contextToken = message.path("context_token").asText("");
-        ObjectNode protocolData = Json.obj().put("conversation", sender);
+        String conversation = group.isBlank() ? sender : group;
+        ObjectNode protocolData = Json.obj().put("conversation", conversation);
         if (!contextToken.isBlank()) {
             protocolData.put("contextToken", contextToken);
         }
@@ -633,15 +635,16 @@ public final class WeixinAdapterInstance implements AdapterInstance, ConnectionP
         String requestId = "weixin-" + messageId;
         VerifiedIngress verified = new VerifiedIngress(requestId, accountKey,
             new VerifiedIngress.Subject(VerifiedIngress.SubjectKind.USER, accountKey + ":user:" + sender),
-            new VerifiedIngress.ExternalScope("weixin", sender),
-            new VerifiedIngress.ExternalReplyTarget(VerifiedIngress.Audience.PERSONAL, sender, protocolData),
+            new VerifiedIngress.ExternalScope(group.isBlank() ? "weixin" : "weixin-group", conversation),
+            new VerifiedIngress.ExternalReplyTarget(group.isBlank()
+                ? VerifiedIngress.Audience.PERSONAL : VerifiedIngress.Audience.SHARED, conversation, protocolData),
             messageId, null);
         IngressResolution resolution;
         ChannelResponse response;
         try {
             resolution = host.ingress().resolve(verified).toCompletableFuture().join();
             response = host.ingress()
-                .submit(resolution.admissionRef(), request(resolution, requestId, sender, text))
+                .submit(resolution.admissionRef(), request(resolution, requestId, conversation, text))
                 .toCompletableFuture().join();
         } catch (RuntimeException e) {
             // resolve 阶段同样可能确定性拒绝（身份未绑定等）：必须分类，不能一律阻塞整批。
