@@ -265,16 +265,61 @@ public final class QqAdapterInstance implements AdapterInstance, ConnectionPort,
             var response = host.ingress().submit(resolved.admissionRef(), new IngressRequest(
                 IngressRequest.SUPPORTED_VERSION, key, resolved.identity(), resolved.routing(),
                 interactionOrText(key, conversation, text))).toCompletableFuture().join();
-            if (response instanceof ChannelResponse.Accepted || response instanceof ChannelResponse.Completed) return;
+            if (response instanceof ChannelResponse.Accepted) return;
+            if (response instanceof ChannelResponse.Completed completed) {
+                replyToInbound(group, conversation, commandText(completed.result()));
+                return;
+            }
             ChannelErrorCode reason = response instanceof ChannelResponse.Rejected r ? r.error().errorCode() :
                 response instanceof ChannelResponse.Unknown u ? u.error().errorCode() : ChannelErrorCode.UNAVAILABLE;
             if (!permanent(reason)) throw new IllegalStateException("QQ inbound submit is retryable");
             reject(key, digest, reason);
+            if (reason == ChannelErrorCode.INVALID_ARGUMENT)
+                replyToInbound(group, conversation, "输入或目标无效。发送 /workspaces 查看工作空间，或检查命令格式。");
         } catch (RuntimeException e) {
             ChannelErrorCode reason = contractCode(e);
             if (reason == null || !permanent(reason)) throw e;
             reject(key, digest, reason);
+            if (reason == ChannelErrorCode.INVALID_ARGUMENT)
+                replyToInbound(group, conversation, "输入或目标无效。发送 /workspaces 查看工作空间，或检查命令格式。");
         }
+    }
+
+    private void replyToInbound(boolean group, String conversation, String text) {
+        if (text == null || text.isBlank()) return;
+        List<String> parts = chunks(text);
+        ReplyAnchor anchor = takeReply(group, conversation, parts.size());
+        for (int i = 0; i < parts.size(); i++)
+            protocol.send(group, conversation, anchor.id(), anchor.sequence() + i, parts.get(i), Duration.ofSeconds(10));
+    }
+
+    static String commandText(OperationResult result) {
+        if (result instanceof OperationResult.WorkspaceList list) {
+            if (list.items().isEmpty()) return "当前群没有可用的工作空间。";
+            var lines = new ArrayList<String>();
+            lines.add("可用工作空间：");
+            for (int i = 0; i < list.items().size(); i++)
+                lines.add((i + 1) + ". " + list.items().get(i).label());
+            lines.add("发送 /workspace 1 选择工作空间。");
+            return String.join("\n", lines);
+        }
+        if (result instanceof OperationResult.WorkspaceSelect) return "已选择工作空间。发送 /new <首条消息> 创建会话。";
+        if (result instanceof OperationResult.SessionList list) {
+            if (list.items().isEmpty()) return "当前工作空间没有群会话。发送 /new <首条消息> 创建。";
+            var lines = new ArrayList<String>();
+            lines.add("群会话：");
+            for (int i = 0; i < list.items().size(); i++)
+                lines.add((i + 1) + ". " + list.items().get(i).label());
+            lines.add("发送 /use 1 选择会话。");
+            return String.join("\n", lines);
+        }
+        if (result instanceof OperationResult.SessionSelect) return "已选择会话，可以直接发送消息。";
+        if (result instanceof OperationResult.SessionCreate) return "会话已创建，首条消息正在处理。";
+        if (result instanceof OperationResult.SessionResume) return "已请求恢复会话。";
+        if (result instanceof OperationResult.TaskGet task) return "任务状态：" + task.task().status();
+        if (result instanceof OperationResult.InteractionRespond) return "已提交回复。";
+        if (result instanceof OperationResult.TaskCancel) return "已提交取消请求。";
+        return null;
     }
     private ChannelOperation interactionOrText(String key, String conversation, String text) {
         var answer = replies.reply(config.settings().path("appId").asText(), conversation, key, text);

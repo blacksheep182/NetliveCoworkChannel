@@ -2,6 +2,10 @@ package com.netlivecowork.channel.l1.qq;
 
 import static org.junit.jupiter.api.Assertions.*;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.netlivecowork.channel.contract.ChannelResponse;
+import com.netlivecowork.channel.contract.NavigationSelection;
+import com.netlivecowork.channel.contract.OperationResult;
+import com.netlivecowork.channel.contract.SessionWorkspace;
 import com.netlivecowork.channel.contract.VerifiedIngress;
 import com.netlivecowork.channel.contract.adapter.AdapterConfig;
 import com.netlivecowork.channel.contract.adapter.AdapterInstanceConfig;
@@ -81,6 +85,38 @@ class QqAdapterTest {
         assertEquals("abc123",host.ownerBindingTokens.getFirst());
         assertEquals("qq-group",host.ownerBindings.getFirst().externalScope().namespace());
         instance.deactivate(com.netlivecowork.channel.contract.adapter.StopReason.SHUTDOWN);
+    }
+
+    @Test void completedWorkspaceListIsSentBackToTheQqGroup() throws Exception {
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        String base="http://127.0.0.1:"+server.getAddress().getPort();
+        var sent=new AtomicReference<JsonNode>();
+        server.createContext("/token",x->reply(x,200,"{\"access_token\":\"token-1\",\"expires_in\":7200}"));
+        server.createContext("/v2/groups/group-1/messages",x->{
+            sent.set(Json.mapper().readTree(x.getRequestBody()));
+            reply(x,200,"{\"id\":\"out-1\"}");
+        });
+        server.start();
+        try {
+            var secret=root.resolve("qq.json");Files.writeString(secret,"{\"clientSecret\":\"secret-1\"}");
+            var host=new TestHost("qq-main");
+            host.submitResponse=request->new ChannelResponse.Completed(request.requestId(),
+                new OperationResult.WorkspaceList(List.of(new SessionWorkspace("ws-1","Project",true)),
+                    new NavigationSelection("scope-1",null,null,0)));
+            var settings=Json.obj().put("appId","app-1").put("secretFile",secret.toString());
+            var config=new AdapterInstanceConfig("tenant","workspace","qq-main",1,1,1,"app-1",settings,List.of());
+            var protocol=new QqProtocol(HttpClient.newHttpClient(),"app-1",secret,URI.create(base),URI.create(base+"/token"));
+            var instance=new QqAdapterInstance(config,host.host(),protocol);
+            instance.activate().toCompletableFuture().join();
+            instance.inbound("GROUP_AT_MESSAGE_CREATE",Json.read("""
+                {"id":"msg-1","content":" /workspaces","group_openid":"group-1",
+                 "author":{"member_openid":"member-1"}}
+                """));
+            assertEquals("msg-1",sent.get().path("msg_id").asText());
+            assertEquals(1,sent.get().path("msg_seq").asInt());
+            assertTrue(sent.get().path("content").asText().contains("1. Project"));
+            instance.deactivate(com.netlivecowork.channel.contract.adapter.StopReason.SHUTDOWN);
+        } finally {server.stop(0);}
     }
 
     @Test void configurationRejectsSecretInSettingsAndNonLoopbackHttp() {
