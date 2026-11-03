@@ -133,9 +133,12 @@ public final class ConnectionManager implements OutboxService.AdapterDeliveryAcc
                     saveRuntime(entry.entryRef(), hostGeneration, EntryRepository.ConnectionState.ONLINE,
                         clock.instant(), 0, null);
                 }
-                case ConnectResult.Connecting ignored ->
-                    saveRuntime(entry.entryRef(), hostGeneration, EntryRepository.ConnectionState.CONNECTING,
-                        null, 0, null);
+                case ConnectResult.Connecting ignored -> {
+                    // An asynchronous adapter may report READY before connect() returns.
+                    if (entries.runtime(entry.entryRef()).state() == EntryRepository.ConnectionState.STARTING)
+                        saveRuntime(entry.entryRef(), hostGeneration, EntryRepository.ConnectionState.CONNECTING,
+                            null, 0, null);
+                }
             }
         } catch (Exception e) {
             scheduleReconnect(entry, hostGeneration, 1);

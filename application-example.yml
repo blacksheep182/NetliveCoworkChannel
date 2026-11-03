@@ -95,6 +95,19 @@ channel:
       settings:
         secretFile: ./data/weixin-main.json
       credentials: {}
+    # QQ 开放平台官方机器人：先在 q.qq.com 创建机器人并取得 AppID / AppSecret。
+    # data/qq-main.json 内容为 {"clientSecret":"..."}，仅保存在本机且不要提交。
+    - entry-ref: qq-main
+      name: QQ 群机器人
+      adapter-type: qq
+      config-version: 1
+      account-binding-epoch: 1
+      enabled: false
+      expected-external-account-key: REPLACE_WITH_QQ_APP_ID
+      settings:
+        appId: REPLACE_WITH_QQ_APP_ID
+        secretFile: ./data/qq-main.json
+      credentials: {}
     - entry-ref: web-local
       name: 手机网页入口
       adapter-type: web

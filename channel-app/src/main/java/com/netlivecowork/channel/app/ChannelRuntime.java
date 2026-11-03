@@ -11,6 +11,7 @@ import com.netlivecowork.channel.contract.port.ApplicationIntakePort;
 import com.netlivecowork.channel.infra.Db;
 import com.netlivecowork.channel.l1.L1Registry;
 import com.netlivecowork.channel.l1.fake.FakeAdapterFactory;
+import com.netlivecowork.channel.l1.qq.QqAdapterFactory;
 import com.netlivecowork.channel.l1.web.WebAdapterFactory;
 import com.netlivecowork.channel.l1.weixin.WeixinAdapterFactory;
 import com.netlivecowork.channel.l2.L2Module;
@@ -70,7 +71,7 @@ public final class ChannelRuntime implements AutoCloseable {
     public static ChannelRuntime create(ChannelProperties properties) {
         Db db = Db.file(Path.of(properties.dataFile()));
         Clock clock = Clock.systemUTC();
-        L1Registry l1 = new L1Registry(List.of(new WeixinAdapterFactory(), new WebAdapterFactory(),
+        L1Registry l1 = new L1Registry(List.of(new WeixinAdapterFactory(), new QqAdapterFactory(), new WebAdapterFactory(),
             new FakeAdapterFactory()));
         SecretBox secretBox = SecretBox.fromEnvironment("CHANNEL_MASTER_KEY", properties.masterKeyId());
 

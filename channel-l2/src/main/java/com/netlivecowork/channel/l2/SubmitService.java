@@ -165,7 +165,7 @@ public final class SubmitService {
     private ChannelResponse submitShared(EntryConfig entry,DirectoryRepository.AdmissionRow admission,
                                          IngressRequest request,String scopeRef,String replyTarget,
                                          DirectoryRepository.ScopeRow scope) {
-        if(!"weixin".equals(entry.adapterType()) || !"weixin-group".equals(scope.namespace())
+        if(!java.util.Objects.equals(GroupWorkspaceGrantService.groupNamespace(entry),scope.namespace())
             || !"SHARED".equals(scope.audience()) || !entry.entryRef().equals(scope.entryRef())
             || scope.accountBindingEpoch()!=entry.accountBindingEpoch()
             || !"USER".equals(admission.identitySubjectKind()))

@@ -18,7 +18,12 @@ public interface IngressPort {
 
     CompletionStage<ChannelResponse> lookup(String admissionRef, String requestId);
 
-    /** A private, platform-verified message completes an owner-initiated identity challenge. */
+    /** A platform-verified message completes an owner-initiated identity challenge. */
+    default CompletionStage<Boolean> completeOwnerBinding(VerifiedIngress input, String token) {
+        return completeOwnerWeixinBinding(input, token);
+    }
+
+    /** Legacy Weixin entry point, retained for existing adapters. */
     default CompletionStage<Boolean> completeOwnerWeixinBinding(VerifiedIngress input, String token) {
         return java.util.concurrent.CompletableFuture.failedFuture(new com.netlivecowork.channel.contract.ChannelContractException(
             com.netlivecowork.channel.contract.ChannelErrorCode.UNSUPPORTED_CAPABILITY, "Owner binding is unavailable"));

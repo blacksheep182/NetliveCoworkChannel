@@ -12,7 +12,7 @@ import com.netlivecowork.channel.l2.store.EntryRepository;
 import java.time.Clock;
 import java.util.List;
 
-/** An owner opens one verified Weixin group scope to one creation workspace. */
+/** An owner opens one verified chat group scope to one creation workspace. */
 final class GroupWorkspaceGrantService {
     record GroupScope(String scopeRef, String entryRef, String groupId) {}
     record Grant(String grantRef, String scopeRef, String entryRef, long entryEpoch,
@@ -52,12 +52,14 @@ final class GroupWorkspaceGrantService {
     List<GroupScope> observedGroups(TrustedCall owner) {
         return db.query("""
             SELECT scope_ref,entry_ref,external_key FROM l2_scopes
-            WHERE tenant_ref=? AND workspace_ref=? AND namespace='weixin-group'
+            WHERE tenant_ref=? AND workspace_ref=? AND namespace IN ('weixin-group','qq-group')
               AND audience='SHARED' AND shared=1 ORDER BY entry_ref,external_key
             """, rs->new GroupScope(rs.getString(1),rs.getString(2),rs.getString(3)),
             owner.tenantRef(),owner.workspaceRef()).stream().filter(scope->{
                 EntryConfig entry=entries.find(owner.tenantRef(),owner.workspaceRef(),scope.entryRef());
-                return entry!=null && entry.enabled() && "weixin".equals(entry.adapterType());
+                var observed=directory.scope(owner.tenantRef(),owner.workspaceRef(),scope.scopeRef());
+                return entry!=null && entry.enabled() && observed!=null &&
+                    java.util.Objects.equals(groupNamespace(entry),observed.namespace());
             }).toList();
     }
 
@@ -77,7 +79,7 @@ final class GroupWorkspaceGrantService {
         EntryConfig entry=requireEntry(owner,entryRef);
         DirectoryRepository.ScopeRow scope=directory.scope(owner.tenantRef(),owner.workspaceRef(),scopeRef);
         if(scope==null || !scope.shared() || !"SHARED".equals(scope.audience())
-            || !"weixin-group".equals(scope.namespace()) || !entryRef.equals(scope.entryRef())
+            || !groupNamespace(entry).equals(scope.namespace()) || !entryRef.equals(scope.entryRef())
             || scope.accountBindingEpoch()!=entry.accountBindingEpoch()) throw denied();
         // The backend catalog is checked before the transaction; it is rechecked on every use.
         List<SessionWorkspace> workspaces=dispatcher.creationWorkspaces(entry,owner.principalRef());
@@ -89,7 +91,7 @@ final class GroupWorkspaceGrantService {
                 || !clock.instant().isBefore(owner.deadline())) throw denied();
             DirectoryRepository.ScopeRow currentScope=directory.scope(owner.tenantRef(),owner.workspaceRef(),scopeRef);
             if(currentScope==null || currentScope.accountBindingEpoch()!=current.accountBindingEpoch()
-                || !currentScope.shared() || !"weixin-group".equals(currentScope.namespace())) throw denied();
+                || !currentScope.shared() || !groupNamespace(current).equals(currentScope.namespace())) throw denied();
             Grant existing=active(scopeRef,workspaceRef);
             if(existing!=null) {
                 if(!owner.principalRef().equals(existing.ownerRef())) throw denied();
@@ -140,7 +142,7 @@ final class GroupWorkspaceGrantService {
         DirectoryRepository.ScopeRow scope=directory.scope(grantTenant(grant.grantRef()),
             grantDeployment(grant.grantRef()),grant.scopeRef());
         return entry!=null && entry.enabled() && entry.accountBindingEpoch()==grant.entryEpoch()
-            && scope!=null && scope.shared() && "weixin-group".equals(scope.namespace())
+            && scope!=null && scope.shared() && java.util.Objects.equals(groupNamespace(entry),scope.namespace())
             && scope.accountBindingEpoch()==grant.entryEpoch();
     }
 
@@ -219,7 +221,7 @@ final class GroupWorkspaceGrantService {
     }
     private EntryConfig requireEntry(TrustedCall owner,String ref) {
         EntryConfig entry=entries.find(owner.tenantRef(),owner.workspaceRef(),ref);
-        if(entry==null || !entry.enabled() || !"weixin".equals(entry.adapterType()))throw denied();
+        if(entry==null || !entry.enabled() || groupNamespace(entry)==null)throw denied();
         String observed=entries.observedAccount(ref),expected=entries.expectedExternalAccountKey(ref);
         if(observed==null || observed.isBlank() || expected!=null && !expected.equals(observed))throw denied();
         return entry;
@@ -227,5 +229,13 @@ final class GroupWorkspaceGrantService {
     private static ChannelContractException denied() {
         return new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,
             "Group workspace grant is not available for this owner and observed group");
+    }
+    static String groupNamespace(EntryConfig entry) {
+        if (entry == null) return null;
+        return switch (entry.adapterType()) {
+            case "weixin" -> "weixin-group";
+            case "qq" -> "qq-group";
+            default -> null;
+        };
     }
 }

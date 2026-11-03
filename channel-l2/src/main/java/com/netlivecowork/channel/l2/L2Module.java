@@ -165,12 +165,37 @@ public final class L2Module implements AutoCloseable {
         ownerWeixinBindings.revoke(managerCall(m), entryRef);
     }
 
+    public record QqBindingEntry(String entryRef,String name,String scopeRef,String groupId,
+                                 boolean accountVerified,boolean bound) {}
+    public java.util.List<QqBindingEntry> ownerQqBindingEntries(com.netlivecowork.channel.contract.SessionAccess.Manager m) {
+        return ownerWeixinBindings.qqEntries(managerCall(m)).stream()
+            .map(e->new QqBindingEntry(e.entryRef(),e.name(),e.scopeRef(),e.groupId(),e.accountVerified(),e.bound()))
+            .toList();
+    }
+    public WeixinChallenge beginOwnerQqBinding(com.netlivecowork.channel.contract.SessionAccess.Manager m,
+                                                String entryRef,String scopeRef) {
+        var challenge=ownerWeixinBindings.beginQq(managerCall(m),entryRef,scopeRef);
+        return new WeixinChallenge(challenge.token(),challenge.expiresAt());
+    }
+    public WeixinBindingStatus ownerQqBindingStatus(com.netlivecowork.channel.contract.SessionAccess.Manager m,
+                                                   String entryRef,String scopeRef) {
+        var status=ownerWeixinBindings.qqStatus(managerCall(m),entryRef,scopeRef);
+        return new WeixinBindingStatus(status.bound(),status.weixinSubject());
+    }
+    public void revokeOwnerQqBinding(com.netlivecowork.channel.contract.SessionAccess.Manager m,
+                                     String entryRef,String scopeRef) {
+        ownerWeixinBindings.revokeQq(managerCall(m),entryRef,scopeRef);
+    }
+
     public record ObservedGroup(String scopeRef, String entryRef, String groupId) {}
     public record GroupWorkspaceGrant(String grantRef, String scopeRef, String entryRef,
                                       String sessionWorkspaceRef, String ownerRef, long revision, boolean active) {}
-    public java.util.List<ObservedGroup> observedWeixinGroups(com.netlivecowork.channel.contract.SessionAccess.Manager m) {
+    public java.util.List<ObservedGroup> observedGroups(com.netlivecowork.channel.contract.SessionAccess.Manager m) {
         return groupWorkspaceGrants.observedGroups(managerCall(m)).stream()
             .map(group -> new ObservedGroup(group.scopeRef(), group.entryRef(), group.groupId())).toList();
+    }
+    public java.util.List<ObservedGroup> observedWeixinGroups(com.netlivecowork.channel.contract.SessionAccess.Manager m) {
+        return observedGroups(m);
     }
     public java.util.List<GroupWorkspaceGrant> groupWorkspaceGrants(com.netlivecowork.channel.contract.SessionAccess.Manager m) {
         return groupWorkspaceGrants.grants(managerCall(m)).stream().map(this::grantView).toList();

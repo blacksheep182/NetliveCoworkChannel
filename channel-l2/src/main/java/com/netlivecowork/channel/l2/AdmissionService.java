@@ -56,7 +56,14 @@ public final class AdmissionService {
         String callerRef;
         long bindingRevision;
         if (binding == null) {
-            if (!settings.autoProvisionIdentities()) {
+            boolean verifiedGroupActor = input.externalScope() != null
+                && input.externalReplyTarget() != null
+                && input.externalReplyTarget().audience() == VerifiedIngress.Audience.SHARED
+                && input.externalSubject().kind() == VerifiedIngress.SubjectKind.USER
+                && input.externalScope().key().equals(input.externalReplyTarget().key())
+                && java.util.Objects.equals(GroupWorkspaceGrantService.groupNamespace(entry),
+                    input.externalScope().namespace());
+            if (!settings.autoProvisionIdentities() && !verifiedGroupActor) {
                 throw new ChannelContractException(ChannelErrorCode.IDENTITY_UNBOUND,
                     "external identity is not bound to an internal caller");
             }

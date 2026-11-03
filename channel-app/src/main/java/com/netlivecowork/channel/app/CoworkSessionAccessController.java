@@ -92,6 +92,52 @@ final class CoworkSessionAccessController {
             return Json.obj().put("bound",false);
         });
     }
+    @GetMapping("/qq-bindings")
+    ResponseEntity<ObjectNode> qqBindingEntries(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof) {
+        return respond(()->{
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            var result=Json.obj();var items=result.putArray("items");
+            for(var item:runtime.l2().ownerQqBindingEntries(manager))
+                items.add(Json.obj().put("entryRef",item.entryRef()).put("name",item.name())
+                    .put("scopeRef",item.scopeRef()).put("groupId",item.groupId())
+                    .put("accountVerified",item.accountVerified()).put("bound",item.bound()));
+            return result;
+        });
+    }
+    @PostMapping("/qq-bindings")
+    ResponseEntity<ObjectNode> beginQqBinding(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof,@RequestBody JsonNode body) {
+        return respond(()->{
+            Json.onlyFields(body,"entryRef","scopeRef");
+            var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            var challenge=runtime.l2().beginOwnerQqBinding(manager,Json.text(body,"entryRef"),Json.text(body,"scopeRef"));
+            return Json.obj().put("challenge","/bind "+challenge.token())
+                .put("expiresAt",challenge.expiresAt().toString());
+        });
+    }
+    @GetMapping("/qq-bindings/{entryRef}/{scopeRef}")
+    ResponseEntity<ObjectNode> qqBindingStatus(@PathVariable String serviceRef,@PathVariable String entryRef,
+            @PathVariable String scopeRef,@RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof) {
+        return respond(()->{
+            var status=runtime.l2().ownerQqBindingStatus(runtime.coworkManager(serviceRef,authorization,proof),entryRef,scopeRef);
+            var result=Json.obj().put("bound",status.bound());
+            if(status.bound())result.put("qqSubject",status.weixinSubject());
+            return result;
+        });
+    }
+    @DeleteMapping("/qq-bindings/{entryRef}/{scopeRef}")
+    ResponseEntity<ObjectNode> revokeQqBinding(@PathVariable String serviceRef,@PathVariable String entryRef,
+            @PathVariable String scopeRef,@RequestHeader(value="Authorization",required=false)String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false)String proof) {
+        return respond(()->{
+            runtime.l2().revokeOwnerQqBinding(runtime.coworkManager(serviceRef,authorization,proof),entryRef,scopeRef);
+            return Json.obj().put("bound",false);
+        });
+    }
     @GetMapping("/group-workspaces")
     ResponseEntity<ObjectNode> groupWorkspaces(@PathVariable String serviceRef,
             @RequestHeader(value="Authorization",required=false)String authorization,
@@ -99,7 +145,7 @@ final class CoworkSessionAccessController {
         return respond(()->{
             var manager=runtime.coworkManager(serviceRef,authorization,proof);
             var result=Json.obj();var groups=result.putArray("groups");var grants=result.putArray("grants");
-            for(var group:runtime.l2().observedWeixinGroups(manager))
+            for(var group:runtime.l2().observedGroups(manager))
                 groups.add(Json.obj().put("scopeRef",group.scopeRef()).put("entryRef",group.entryRef())
                     .put("groupId",group.groupId()));
             for(var grant:runtime.l2().groupWorkspaceGrants(manager))grants.add(grantJson(grant));
