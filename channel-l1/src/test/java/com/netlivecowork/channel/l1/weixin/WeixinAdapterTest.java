@@ -300,6 +300,22 @@ class WeixinAdapterTest {
     }
 
     @Test
+    void malformedGroupIdentityNeverFallsBackToPersonalScope() throws IOException {
+        writeSecret("tok-1", "bot-a");
+        WeixinAdapterInstance instance = instance(null);
+        instance.activate().toCompletableFuture().join();
+        updates.set(json.readTree("""
+            {"ret":0,"get_updates_buf":"next","msgs":[{"message_id":"group-bad",
+             "from_user_id":"alice","group_id":{"unexpected":"room-1"},
+             "item_list":[{"type":1,"text_item":{"text":"hello group"}}]}]}
+            """));
+
+        assertThrows(RuntimeException.class, instance::pollOnce);
+        assertTrue(host.resolved.isEmpty());
+        assertNull(host.stateValue("cursor"));
+    }
+
+    @Test
     void sharedDestinationRepliesToTheRegisteredGroup() throws IOException {
         writeSecret("tok-1", "bot-a");
         WeixinAdapterInstance instance = instance(null);

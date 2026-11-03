@@ -595,6 +595,10 @@ public final class WeixinAdapterInstance implements AdapterInstance, ConnectionP
     private void submitInbound(JsonNode message, String text) {
         String messageId = message.path("message_id").asText("");
         String sender = message.path("from_user_id").asText("");
+        if (message.has("group_id") && !message.get("group_id").isTextual()) {
+            throw new WeixinProtocol.PlatformFailure(ChannelErrorCode.INVALID_ARGUMENT, false,
+                "weixin inbound group identity is malformed");
+        }
         String group = message.path("group_id").asText("");
         if (messageId.isBlank() || sender.isBlank()) {
             throw new WeixinProtocol.PlatformFailure(ChannelErrorCode.INVALID_ARGUMENT, false,
