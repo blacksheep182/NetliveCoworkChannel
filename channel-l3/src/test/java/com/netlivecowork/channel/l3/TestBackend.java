@@ -138,7 +138,7 @@ final class TestBackend implements AutoCloseable {
             return """
                 {"protocol_version":"1","profile":"personal-text-v1","backend_id":"%s",\
                 "features":{"resource_facts":true,"delegated_calls":true,"session_read":true,\
-                "message_submit":true,"request_lookup":true,"event_push":true,"event_replay":true,"session_catalog":true,"session_workspaces":%s,"interaction_response":%s,"session_create":%s},\
+                "message_submit":true,"request_lookup":true,"event_push":true,"event_replay":true,"session_catalog":true,"session_workspaces":%s,"interaction_response":%s,"session_create":%s,"session_resume":true},\
                 "limits":{},"retention":{"request_min_seconds":60,"acked_event_min_seconds":60},\
                 "auth":{"service":"bearer","delegation":"backend-adapter","adapter_id":"%s"}}
                 """.formatted(BACKEND_ID, workspaces, interactions, creation, ADAPTER_ID);

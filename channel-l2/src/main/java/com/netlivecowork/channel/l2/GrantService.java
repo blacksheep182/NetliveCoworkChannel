@@ -615,7 +615,7 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
 
     private List<GrantPermission> required(com.netlivecowork.channel.contract.CommandPacket p) {
         return switch (p.type()) {
-            case INPUT_SUBMIT, SESSION_CREATE -> List.of(new GrantManagement.TargetRead(), new GrantManagement.InputSubmit());
+            case INPUT_SUBMIT, SESSION_CREATE, SESSION_RESUME -> List.of(new GrantManagement.TargetRead(), new GrantManagement.InputSubmit());
             case SESSION_GET -> List.of(new GrantManagement.TargetRead());
             case TASK_GET -> List.of(new GrantManagement.TaskRead());
             case TASK_CANCEL -> List.of(new GrantManagement.TaskCancel());

@@ -7,7 +7,7 @@ import java.util.List;
  * 响应生效后表达 applied（INV-61）。
  */
 public sealed interface OperationResult permits OperationResult.SessionCreate, OperationResult.InputSubmit, OperationResult.SessionList,
-    OperationResult.SessionGet, OperationResult.SessionSelect, OperationResult.TaskGet, OperationResult.TaskCancel,
+    OperationResult.SessionGet, OperationResult.SessionResume, OperationResult.SessionSelect, OperationResult.TaskGet, OperationResult.TaskCancel,
     OperationResult.SelectionGet, OperationResult.WorkspaceList, OperationResult.WorkspaceSelect, OperationResult.InteractionRespond, OperationResult.SubscriptionCreate, OperationResult.SubscriptionRemove {
 
     CommandType type();
@@ -63,6 +63,11 @@ public sealed interface OperationResult permits OperationResult.SessionCreate, O
         public CommandType type() {
             return CommandType.SESSION_GET;
         }
+    }
+
+    record SessionResume(String targetRef) implements OperationResult {
+        public SessionResume { Producer.requireText(targetRef, "session.resume.targetRef"); }
+        public CommandType type() { return CommandType.SESSION_RESUME; }
     }
 
     record SessionSelect(String scopeRef, String targetRef, long revision, String sessionWorkspaceRef) implements OperationResult {

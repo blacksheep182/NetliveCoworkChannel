@@ -645,6 +645,17 @@ public final class SubmitService {
                 requireTarget(tenant, workspace, targetRef, shared?groupGrant.ownerRef():admission.callerRef(), "target.read");
                 payload = new CommandPayload.SessionGet();
             }
+            case ChannelOperation.SessionResume resume -> {
+                targetRef = resume.targetRef();
+                if(shared) {
+                    groupGrant=groupGrants.forTarget(scopeRef,targetRef);
+                    groupGrants.requireTarget(groupGrant,scopeRef,targetRef);
+                }
+                String principal=shared?groupGrant.ownerRef():admission.callerRef();
+                requireTarget(tenant,workspace,targetRef,principal,"target.read");
+                requireTarget(tenant,workspace,targetRef,principal,"input.submit");
+                payload = new CommandPayload.SessionResume();
+            }
             case ChannelOperation.TaskGet get -> {
                 RequestRepository.TaskRow task = requireTask(tenant, workspace, get.taskRef());
                 taskRef = task.taskRef();
@@ -703,7 +714,7 @@ public final class SubmitService {
     }
 
     private boolean isWrite(CommandType type) {
-        return type == CommandType.INPUT_SUBMIT || type == CommandType.TASK_CANCEL
+        return type == CommandType.INPUT_SUBMIT || type == CommandType.SESSION_RESUME || type == CommandType.TASK_CANCEL
             || type == CommandType.INTERACTION_RESPOND;
     }
 

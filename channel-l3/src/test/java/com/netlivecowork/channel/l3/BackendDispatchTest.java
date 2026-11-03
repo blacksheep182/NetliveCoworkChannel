@@ -36,6 +36,58 @@ class BackendDispatchTest {
     Path tempDir;
 
     @Test
+    void resumeUsesBoundBackendRequestAndPreservesItsReceipt() throws Exception {
+        Db db=TestFixtures.db(tempDir);
+        try(TestBackend backend=new TestBackend(call->{
+                String key=com.netlivecowork.channel.contract.json.Json.text(
+                    com.netlivecowork.channel.contract.json.Json.read(call.body()),"request_key");
+                String digest=db.queryOne("SELECT request_digest FROM backend_request_bindings WHERE operation_ref=?",
+                    rs->rs.getString(1),"op-resume");
+                return TestBackend.Response.json(200,"{\"request_key\":\""+key+"\",\"status\":\"accepted\",\"request_digest\":\""+digest+"\"}");
+             });L3Module module=module(TestFixtures.settings(),backend,db)) {
+            var command=TestFixtures.command("op-resume",TestFixtures.TARGET,
+                CommandType.SESSION_RESUME,new CommandPayload.SessionResume());
+            var outcome=module.access().submitCommand(command,TestFixtures.call()).toCompletableFuture().get();
+            assertEquals(DispatchStatus.AGENT_ACCEPTED,outcome.status());
+            assertInstanceOf(OperationResult.SessionResume.class,
+                ((ReceiptPayload.Completed)outcome.receipt().payload()).result());
+            assertTrue(backend.lastCall().path().endsWith("/sessions/session-1/resume"));
+            assertEquals(DispatchStatus.AGENT_ACCEPTED,module.access().lookupOperation("op-resume",TestFixtures.call())
+                .toCompletableFuture().get().status());
+            assertEquals(1,backend.callCount());
+        }
+    }
+
+    @Test
+    void unknownResumeIsQueriedByOriginalKeyWithoutResending() throws Exception {
+        Db db=TestFixtures.db(tempDir);
+        try(TestBackend backend=new TestBackend(call->{
+                String key="resume-key";
+                if("POST".equals(call.method()))
+                    key=com.netlivecowork.channel.contract.json.Json.text(
+                        com.netlivecowork.channel.contract.json.Json.read(call.body()),"request_key");
+                if("GET".equals(call.method()))
+                    key=call.path().substring(call.path().lastIndexOf('/')+1);
+                String digest=db.queryOne("SELECT request_digest FROM backend_request_bindings WHERE operation_ref=?",
+                    rs->rs.getString(1),"op-resume-unknown");
+                String status="POST".equals(call.method())?"unknown":"accepted";
+                return TestBackend.Response.json(200,"{\"request_key\":\""+key+"\",\"status\":\""+status
+                    +"\",\"request_digest\":\""+digest+"\"}");
+             });L3Module module=module(TestFixtures.settings(),backend,db)) {
+            var command=TestFixtures.command("op-resume-unknown",TestFixtures.TARGET,
+                CommandType.SESSION_RESUME,new CommandPayload.SessionResume());
+            assertEquals(DispatchStatus.OUTCOME_UNKNOWN,module.access().submitCommand(command,TestFixtures.call())
+                .toCompletableFuture().get().status());
+            assertEquals("SENT_UNKNOWN",scalarPhase(db,"op-resume-unknown"));
+            var found=module.access().lookupOperation("op-resume-unknown",TestFixtures.call())
+                .toCompletableFuture().get();
+            assertEquals(DispatchStatus.AGENT_ACCEPTED,found.status());
+            assertEquals(1,backend.calls().stream().filter(c->"POST".equals(c.method())).count());
+            assertTrue(backend.lastCall().path().contains("/resumptions/"));
+        }
+    }
+
+    @Test
     void unknownTargetIsNotSentWithoutHttp() throws Exception {
         Db db = TestFixtures.db(tempDir);
         try (TestBackend backend = new TestBackend(call -> TestBackend.Response.status(202));

@@ -161,6 +161,34 @@ final class BackendProtocol {
         var auth=authorize(service,target,call,"session.read","GET",path,Json.obj(),null);
         return interactionResult(successful(client.exchange(service,"GET",path,null,auth.headers())),row,call,dispatches);
     }
+    OperationLookup lookupResume(BackendService service,TargetRegistration target,Dispatch row,TrustedCall call,DispatchStore dispatches)
+            throws IOException,InterruptedException {
+        require(target!=null && row.targetRef().equals(target.targetRef())
+            && row.sessionId().equals(target.sessionId()) && row.resourceEpoch()==target.resourceEpoch(),
+            "Original resume resource changed");
+        var registration=registration(service);
+        require(registration.backendId().equals(binding(row.operationRef(),call,"backend_id"))
+            && registration.clientId().equals(binding(row.operationRef(),call,"client_id")),
+            "Original backend identity changed");
+        String path=sessionPath(row.sessionId())+"/resumptions/"+PythonBackendClient.encode(row.requestKey());
+        var auth=authorize(service,target,call,"session.read","GET",path,Json.obj(),null);
+        return resumeResult(successful(client.exchange(service,"GET",path,null,auth.headers())),row,call,dispatches);
+    }
+    OperationLookup resumeResult(JsonNode node,Dispatch row,TrustedCall call,DispatchStore dispatches) {
+        Json.onlyFields(node,"request_key","status","request_digest");
+        require(row.requestKey().equals(Json.text(node,"request_key")),"Resume result correlation mismatch");
+        String status=Json.text(node,"status");
+        if("unknown".equals(status))return unknown(row.operationRef());
+        require("accepted".equals(status),"Invalid resume result status");
+        require(java.util.Objects.equals(binding(row.operationRef(),call,"request_digest"),Json.text(node,"request_digest")),
+            "Resume request digest mismatch");
+        var original=ReceiptCodec.decode(binding(row.operationRef(),call,"accepted_receipt"));
+        var receipt=new ReceiptPacket(original.version(),com.netlivecowork.channel.infra.Ids.next("receipt"),clock.instant(),
+            original.correlation(),original.context(),original.producer(),
+            new ReceiptPayload.Completed(new OperationResult.SessionResume(row.targetRef())));
+        dispatches.recordAccepted(row.operationRef(),receipt);
+        return new OperationLookup(row.operationRef(),DispatchStatus.AGENT_ACCEPTED,receipt,null);
+    }
 
     OperationLookup interactionResult(JsonNode node,Dispatch row,TrustedCall call,DispatchStore dispatches) {
         Json.onlyFields(node,"request_key","status","request_digest","source_event_id");

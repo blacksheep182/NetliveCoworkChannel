@@ -40,11 +40,17 @@ class GroupSessionFlowTest {
             var bob=admission.resolve(entry,inbound("bob-1","bob","room-1"));
             var listing=(OperationResult.SessionList)completed(admission,entry,bob,"list",new ChannelOperation.SessionList(null,null));
             assertEquals(List.of("group-target"),listing.items().stream().map(SessionSummary::targetRef).toList());
+            assertInstanceOf(ChannelResponse.Accepted.class,call(admission,entry,bob,"resume-group",
+                new ChannelOperation.SessionResume("group-target")));
             var otherGroup=admission.resolve(entry,inbound("charlie-1","charlie","room-2"));
             assertEquals(ChannelErrorCode.PERMISSION_DENIED,((ChannelResponse.Rejected)call(admission,entry,otherGroup,
                 "cross-group",new ChannelOperation.SessionGet("group-target"))).error().errorCode());
+            assertEquals(ChannelErrorCode.PERMISSION_DENIED,((ChannelResponse.Rejected)call(admission,entry,otherGroup,
+                "cross-group-resume",new ChannelOperation.SessionResume("group-target"))).error().errorCode());
             assertEquals(ChannelErrorCode.PERMISSION_DENIED,((ChannelResponse.Rejected)call(admission,entry,bob,"private",
                 new ChannelOperation.SessionGet("private-target"))).error().errorCode());
+            assertEquals(ChannelErrorCode.PERMISSION_DENIED,((ChannelResponse.Rejected)call(admission,entry,bob,"private-resume",
+                new ChannelOperation.SessionResume("private-target"))).error().errorCode());
             var groupInput=assertInstanceOf(ChannelResponse.Accepted.class,call(admission,entry,bob,"input",
                 new ChannelOperation.InputSubmit(null,ChannelOperation.Interpretation.LITERAL,
                     List.of(new ContentPart.Text("p1","Continue")),null)));

@@ -24,7 +24,7 @@ import java.util.List;
  */
 public final class CommandInterpreter {
 
-    private static final String HELP = "supported commands: /new <first message>, /workspaces, /workspace <number|sessionWorkspaceRef>, /list, /use <number|targetRef>, /status, "
+    private static final String HELP = "supported commands: /new <first message>, /workspaces, /workspace <number|sessionWorkspaceRef>, /list, /use <number|targetRef>, /status, /resume, "
         + "/cancel <taskRef>, /approve, /reject, /answer <text>";
 
     private final DirectoryRepository directory;
@@ -72,6 +72,12 @@ public final class CommandInterpreter {
                 new ChannelOperation.SessionList(null, null), text);
             case "/use" -> new Interpreted(select(tenantRef, workspaceRef, scopeRef, first, request.identity().callerRef()), text);
             case "/status" -> new Interpreted(status(tenantRef, workspaceRef, scopeRef), text);
+            case "/resume" -> {
+                if (!first.isBlank()) throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,
+                    "Use /resume after selecting a session with /list and /use");
+                yield new Interpreted(new ChannelOperation.SessionResume(
+                    status(tenantRef, workspaceRef, scopeRef).targetRef()), text);
+            }
             case "/cancel" -> new Interpreted(cancel(first, rest), text);
             case "/approve", "/reject" -> {
                 if (!rest.isBlank() && (!command.equals("/reject") || first.startsWith("#")
@@ -140,7 +146,7 @@ public final class CommandInterpreter {
         return new ChannelOperation.WorkspaceSelect(ref,binding==null?0:binding.revision());
     }
 
-    private ChannelOperation status(String tenantRef, String workspaceRef, String scopeRef) {
+    private ChannelOperation.SessionGet status(String tenantRef, String workspaceRef, String scopeRef) {
         if (scopeRef == null) {
             throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,
                 "/status requires a bound scope");

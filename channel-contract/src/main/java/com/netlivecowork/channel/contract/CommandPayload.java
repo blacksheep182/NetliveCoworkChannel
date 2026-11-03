@@ -7,7 +7,7 @@ import java.util.Set;
  * 移入规范 context，群当前默认目标只在首次受理时解析（data-contracts.md §4.2）。
  */
 public sealed interface CommandPayload permits CommandPayload.SessionCreate, CommandPayload.InputSubmit, CommandPayload.SessionList,
-    CommandPayload.SessionSelect, CommandPayload.SessionGet, CommandPayload.TaskGet, CommandPayload.TaskCancel,
+    CommandPayload.SessionSelect, CommandPayload.SessionGet, CommandPayload.SessionResume, CommandPayload.TaskGet, CommandPayload.TaskCancel,
     CommandPayload.InteractionRespond, CommandPayload.SubscriptionCreate, CommandPayload.SubscriptionRemove, CommandPayload.SelectionGet, CommandPayload.WorkspaceList, CommandPayload.WorkspaceSelect {
 
     /** messageRef 由 L2 受理时签发；已解析引用与 replyToMessageRef 复验后保留。 */
@@ -47,6 +47,9 @@ public sealed interface CommandPayload permits CommandPayload.SessionCreate, Com
     record WorkspaceSelect(String scopeRef, String sessionWorkspaceRef, long expectedBindingRevision) implements CommandPayload {}
 
     record SessionGet() implements CommandPayload {
+    }
+
+    record SessionResume() implements CommandPayload {
     }
 
     record TaskGet() implements CommandPayload {

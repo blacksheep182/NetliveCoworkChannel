@@ -10,6 +10,7 @@ public enum CommandType {
     SESSION_LIST("session.list", CommandPayload.SessionList.class),
     SESSION_SELECT("session.select", CommandPayload.SessionSelect.class),
     SESSION_GET("session.get", CommandPayload.SessionGet.class),
+    SESSION_RESUME("session.resume", CommandPayload.SessionResume.class),
     TASK_GET("task.get", CommandPayload.TaskGet.class),
     TASK_CANCEL("task.cancel", CommandPayload.TaskCancel.class),
     INTERACTION_RESPOND("interaction.respond", CommandPayload.InteractionRespond.class),

@@ -8,7 +8,7 @@ import java.util.Set;
  * 在首次受理时进入规范 context，不由调用者追加字段（data-contracts.md §4.1）。
  */
 public sealed interface ChannelOperation permits ChannelOperation.SessionCreate, ChannelOperation.InputSubmit, ChannelOperation.SessionList,
-    ChannelOperation.SessionSelect, ChannelOperation.SessionGet, ChannelOperation.TaskGet,
+    ChannelOperation.SessionSelect, ChannelOperation.SessionGet, ChannelOperation.SessionResume, ChannelOperation.TaskGet,
     ChannelOperation.TaskCancel, ChannelOperation.InteractionRespond, ChannelOperation.SubscriptionCreate,
     ChannelOperation.SubscriptionRemove, ChannelOperation.SelectionGet, ChannelOperation.WorkspaceList, ChannelOperation.WorkspaceSelect {
 
@@ -101,6 +101,11 @@ public sealed interface ChannelOperation permits ChannelOperation.SessionCreate,
         public String type() {
             return "session.get";
         }
+    }
+
+    record SessionResume(String targetRef) implements ChannelOperation {
+        public SessionResume { Producer.requireText(targetRef, "session.resume.targetRef"); }
+        public String type() { return "session.resume"; }
     }
 
     record TaskGet(String taskRef) implements ChannelOperation {

@@ -210,6 +210,16 @@ class InteractionCommandTest {
         assertEquals(first.interactionRef(), payload(original).interactionRef());
     }
 
+    @Test void resumeUsesTheSelectedSessionAndRejectsArguments() {
+        var accepted = assertInstanceOf(ChannelResponse.Accepted.class, command("/resume"));
+        var packet = PacketJson.decCommand(test.module.requests().inboxByOperation(accepted.operationRef()).commandJson());
+        assertEquals(CommandType.SESSION_RESUME, packet.type());
+        assertEquals("target-1", packet.context().targetRef());
+        assertInstanceOf(CommandPayload.SessionResume.class, packet.payload());
+        assertEquals(ChannelErrorCode.INVALID_ARGUMENT, assertInstanceOf(ChannelResponse.Rejected.class,
+            command("/resume anything")).error().errorCode());
+    }
+
     @Test void emptyAnswerAndUnselectedScopeHaveActionableMessages() {
         assertTrue(assertInstanceOf(ChannelResponse.Rejected.class, command("/answer")).error().message()
             .contains("/answer 答案"));

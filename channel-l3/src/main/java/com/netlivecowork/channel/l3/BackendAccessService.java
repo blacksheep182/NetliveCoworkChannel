@@ -160,16 +160,21 @@ final class BackendAccessService implements com.netlivecowork.channel.contract.p
             Prepared prepared;
             BackendProtocol.Authorized authorization;
             try {
-                if (command.type() != CommandType.INPUT_SUBMIT && command.type()!=CommandType.INTERACTION_RESPOND) {
+                if (command.type() != CommandType.INPUT_SUBMIT && command.type()!=CommandType.INTERACTION_RESPOND
+                    && command.type()!=CommandType.SESSION_RESUME) {
                     throw new ChannelContractException(ChannelErrorCode.UNSUPPORTED_CAPABILITY,
                         "operation is outside personal-text-v1");
                 }
                 protocol.facts(resolved.service(), resolved.target());
                 boolean interaction=command.type()==CommandType.INTERACTION_RESPOND;
+                boolean resuming=command.type()==CommandType.SESSION_RESUME;
                 if(interaction && !protocol.capabilities(resolved.service()).path("features").path("interaction_response").asBoolean(false))
                     throw new ChannelContractException(ChannelErrorCode.UNSUPPORTED_CAPABILITY,"Backend interaction response is unavailable");
+                if(resuming && !protocol.capabilities(resolved.service()).path("features").path("session_resume").asBoolean(false))
+                    throw new ChannelContractException(ChannelErrorCode.UNSUPPORTED_CAPABILITY,"Backend session recovery is unavailable");
                 prepared = interaction?preparedInteraction(command,resolved,row):prepare(command, resolved, row);
-                authorization = protocol.authorize(resolved.service(), resolved.target(), call, interaction?"interaction.respond":"message.submit",
+                authorization = protocol.authorize(resolved.service(), resolved.target(), call,
+                    interaction?"interaction.respond":resuming?"session.resume":"message.submit",
                     "POST", prepared.path(), Json.read(prepared.body()), row.requestKey());
                 protocol.bind(row, call, authorization, settings.sinkRef(), receipt(command,
                     new ReceiptPayload.Accepted(ReceiptPayload.AcceptedBy.AGENT)));
@@ -230,6 +235,21 @@ final class BackendAccessService implements com.netlivecowork.channel.contract.p
                     return new CommandOutcome(result.status(),operationRef,result.receipt(),result.error());
                 } catch(RuntimeException invalidReply) {
                     var error=ChannelErrorCode.OUTCOME_UNKNOWN.error("Backend did not provide bound decision evidence; query the original request");
+                    dispatches.recordUnknown(operationRef,receipt(command,new ReceiptPayload.Unknown(error)),error.message());
+                    return CommandOutcome.unknown(operationRef,error);
+                }
+            }
+            if(command.type()==CommandType.SESSION_RESUME && reply.success()) {
+                try {
+                    var result=protocol.resumeResult(Json.read(reply.body()),claimed,call,dispatches);
+                    if(result.status()==DispatchStatus.OUTCOME_UNKNOWN) {
+                        var error=ChannelErrorCode.OUTCOME_UNKNOWN.error("Resume outcome is unknown; query the original request");
+                        dispatches.recordUnknown(operationRef,receipt(command,new ReceiptPayload.Unknown(error)),error.message());
+                        return CommandOutcome.unknown(operationRef,error);
+                    }
+                    return new CommandOutcome(result.status(),operationRef,result.receipt(),result.error());
+                } catch(RuntimeException invalidReply) {
+                    var error=ChannelErrorCode.OUTCOME_UNKNOWN.error("Backend did not confirm the original resume request");
                     dispatches.recordUnknown(operationRef,receipt(command,new ReceiptPayload.Unknown(error)),error.message());
                     return CommandOutcome.unknown(operationRef,error);
                 }
@@ -487,6 +507,7 @@ final class BackendAccessService implements com.netlivecowork.channel.contract.p
         if (row.phase() == Dispatch.Phase.SENT_UNKNOWN) {
             try {
                 if(row.commandType()==CommandType.INTERACTION_RESPOND)return protocol.lookupInteraction(expectedService(row.serviceRef()),target,row,call,dispatches);
+                if(row.commandType()==CommandType.SESSION_RESUME)return protocol.lookupResume(expectedService(row.serviceRef()),target,row,call,dispatches);
                 return protocol.lookup(expectedService(row.serviceRef()), row, call, dispatches);
             }
             catch (InterruptedException e) { Thread.currentThread().interrupt(); return BackendProtocol.unknown(operationRef); }
@@ -716,6 +737,10 @@ final class BackendAccessService implements com.netlivecowork.channel.contract.p
     /** 构造后端写请求（不含任何平台标识）；能力/内容不足时在派发前明确拒绝。 */
     private Prepared prepare(CommandPacket command, TargetResolver.Resolved resolved, Dispatch row) {
         return switch (command.type()) {
+            case SESSION_RESUME -> {
+                ObjectNode body=Json.obj().put("request_key",row.requestKey());
+                yield new Prepared(BackendProtocol.sessionPath(resolved.target().sessionId())+"/resume",Json.write(body));
+            }
             case INPUT_SUBMIT -> {
                 String sinkRef = settings.sinkRef();
                 if (sinkRef == null) {

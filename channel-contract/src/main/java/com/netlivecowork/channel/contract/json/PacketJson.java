@@ -196,6 +196,8 @@ public final class PacketJson {
                 .put("sessionWorkspaceRef",select.sessionWorkspaceRef()).put("expectedBindingRevision",select.expectedBindingRevision());
             case CommandPayload.SessionGet ignored -> {
             }
+            case CommandPayload.SessionResume ignored -> {
+            }
             case CommandPayload.TaskGet ignored -> {
             }
             case CommandPayload.TaskCancel cancel -> {
@@ -250,6 +252,10 @@ public final class PacketJson {
             case SESSION_GET -> {
                 Json.onlyFields(node);
                 yield new CommandPayload.SessionGet();
+            }
+            case SESSION_RESUME -> {
+                Json.onlyFields(node);
+                yield new CommandPayload.SessionResume();
             }
             case TASK_GET -> {
                 Json.onlyFields(node);
@@ -570,6 +576,7 @@ public final class PacketJson {
                 node.set("session",enc(get.session()));
                 if(get.interactions()!=null){var list=node.putArray("interactions");get.interactions().forEach(e->list.add(enc(e)));}
             }
+            case OperationResult.SessionResume resumed -> node.put("targetRef",resumed.targetRef());
             case OperationResult.SessionSelect select -> node.put("scopeRef", select.scopeRef())
                 .put("targetRef", select.targetRef()).put("revision", select.revision()).put("sessionWorkspaceRef", select.sessionWorkspaceRef());
             case OperationResult.TaskGet get -> node.set("task", enc(get.task()));
@@ -1071,6 +1078,7 @@ public final class PacketJson {
             case ChannelOperation.WorkspaceSelect select -> node.put("sessionWorkspaceRef",select.sessionWorkspaceRef())
                 .put("expectedBindingRevision",select.expectedBindingRevision());
             case ChannelOperation.SessionGet get -> node.put("targetRef", get.targetRef());
+            case ChannelOperation.SessionResume resume -> node.put("targetRef", resume.targetRef());
             case ChannelOperation.TaskGet get -> node.put("taskRef", get.taskRef());
             case ChannelOperation.TaskCancel cancel -> {
                 node.put("taskRef", cancel.taskRef());
@@ -1126,6 +1134,10 @@ public final class PacketJson {
             case "session.get" -> {
                 Json.onlyFields(node, "targetRef", "type");
                 yield new ChannelOperation.SessionGet(Json.text(node, "targetRef"));
+            }
+            case "session.resume" -> {
+                Json.onlyFields(node, "targetRef", "type");
+                yield new ChannelOperation.SessionResume(Json.text(node, "targetRef"));
             }
             case "task.get" -> {
                 Json.onlyFields(node, "taskRef", "type");
@@ -1197,6 +1209,7 @@ public final class PacketJson {
                 if(node.has("interactions")){interactions=new java.util.ArrayList<>();for(var e:Json.array(node,"interactions"))interactions.add(decEvent(Json.write(e)));}
                 yield new OperationResult.SessionGet(decSession(Json.obj(node,"session")),interactions);
             }
+            case SESSION_RESUME -> new OperationResult.SessionResume(Json.text(node,"targetRef"));
             case SESSION_SELECT -> new OperationResult.SessionSelect(Json.text(node, "scopeRef"),
                 Json.text(node, "targetRef"), Json.reqLong(node, "revision"),Json.optText(node,"sessionWorkspaceRef"));
             case TASK_GET -> new OperationResult.TaskGet(decTask(Json.obj(node, "task")));
