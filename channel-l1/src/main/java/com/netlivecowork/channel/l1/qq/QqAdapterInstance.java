@@ -103,7 +103,8 @@ public final class QqAdapterInstance implements AdapterInstance, ConnectionPort,
         if (!active || generation != attempt.generation() || !ready || socket == null)
             return CompletableFuture.completedFuture(ProbeResult.unhealthy(ChannelErrorCode.UNAVAILABLE.error("QQ gateway is offline")));
         return CompletableFuture.completedFuture(System.currentTimeMillis() - lastHeartbeatAck < heartbeatMillis * 3
-            ? ProbeResult.healthy() : ProbeResult.unknown("QQ gateway heartbeat is stale"));
+            ? ProbeResult.healthy()
+            : ProbeResult.unhealthy(ChannelErrorCode.UNAVAILABLE.error("QQ gateway heartbeat is stale")));
     }
 
     private final class Listener implements WebSocket.Listener {
