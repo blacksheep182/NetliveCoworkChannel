@@ -21,9 +21,35 @@ public record ChannelDelivery(String version, String deliveryId, EventPacket pac
                 "delivery requires presentation.sourceLabel");
         }
         actions = actions == null ? List.of() : List.copyOf(actions);
-        if (presentation.notification() != null && (packet.type() != EventType.TASK_COMPLETED
-            || packet.context().taskRef() == null))
-            throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, "Completion notice requires task.completed");
+        var status = packet.type().terminalTaskStatus();
+        if (presentation.notification() != null && (status == null || packet.context().taskRef() == null
+            || !presentation.notification().kind().equals("task_" + status.wire())))
+            throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, "Completion notice requires a terminal task event");
+    }
+
+    /** The same task receipt is projected by every L1 adapter. */
+    public record CompletionReceipt(String origin, String sessionWorkspaceRef, String workspaceLabel,
+                                    String targetRef, String sessionLabel, String taskRef,
+                                    String query, String status, String result) {}
+
+    public CompletionReceipt completionReceipt() {
+        if (presentation.notification() == null) return null;
+        var details = switch (packet.payload()) {
+            case EventPayload.TaskCompleted value -> value.completion();
+            case EventPayload.TaskFailed value -> value.completion();
+            case EventPayload.TaskCancelled value -> value.completion();
+            default -> null;
+        };
+        var source = presentation.source();
+        String query = details != null && details.query() != null ? details.query()
+            : source == null ? null : source.taskSummary();
+        String result = details == null ? null : details.result();
+        if (result == null && packet.payload() instanceof EventPayload.TaskFailed failed) result = failed.error().message();
+        if (result == null && packet.payload() instanceof EventPayload.TaskCancelled cancelled) result = cancelled.reason();
+        return new CompletionReceipt(presentation.notification().origin(),
+            source == null ? null : source.sessionWorkspaceRef(), source == null ? null : source.workspaceLabel(),
+            packet.context().targetRef(), source == null ? presentation.sourceLabel() : source.sessionLabel(),
+            packet.context().taskRef(), query, packet.type().terminalTaskStatus().wire(), result);
     }
 
     public record Routing(String entryRef, String destinationRef, long destinationRevision) {
@@ -47,7 +73,9 @@ public record ChannelDelivery(String version, String deliveryId, EventPacket pac
     }
     public record Notification(String kind, String origin, Navigation navigation) {
         public Notification {
-            if (!"task_completed".equals(kind) || !("request_reply".equals(origin) || "task_subscription".equals(origin)) || navigation == null)
+            if (!("task_completed".equals(kind) || "task_failed".equals(kind) || "task_cancelled".equals(kind))
+                || !("request_reply".equals(origin) || "task_subscription".equals(origin)
+                    || "session_subscription".equals(origin)) || navigation == null)
                 throw new IllegalArgumentException("Invalid completion notice");
         }
     }

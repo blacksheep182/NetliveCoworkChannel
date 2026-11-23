@@ -11,6 +11,10 @@
   <name>channel-app</name>
   <description>装配层：Spring Boot 启动、管理端 API、Adapter webhook 与 L3 事件接收入口</description>
 
+  <properties>
+    <channel.executable.outputDirectory>${project.build.directory}</channel.executable.outputDirectory>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>com.netlivecowork</groupId>
@@ -50,8 +54,19 @@
   <build>
     <plugins>
       <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <!-- Give Spring Boot a separate input so repackage does not rename it in place. -->
+          <outputDirectory>${project.build.directory}/plain</outputDirectory>
+        </configuration>
+      </plugin>
+      <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <outputDirectory>${channel.executable.outputDirectory}</outputDirectory>
+        </configuration>
       </plugin>
     </plugins>
   </build>

@@ -63,7 +63,11 @@ public sealed interface AgentEventPayload permits AgentEventPayload.MessageReady
     }
 
     record TaskCompleted(String backendTaskId, long revision, List<String> backendResultMessageIds,
-                         List<BackendFileGrant> files) implements AgentEventPayload {
+                         List<BackendFileGrant> files, EventPayload.TaskCompletion completion) implements AgentEventPayload {
+        public TaskCompleted(String backendTaskId, long revision, List<String> backendResultMessageIds,
+                             List<BackendFileGrant> files) {
+            this(backendTaskId, revision, backendResultMessageIds, files, null);
+        }
         public TaskCompleted {
             Producer.requireText(backendTaskId, "task.completed.backendTaskId");
             if (revision < 1) {
@@ -77,7 +81,10 @@ public sealed interface AgentEventPayload permits AgentEventPayload.MessageReady
     }
 
     record TaskFailed(String backendTaskId, long revision, ChannelError error,
-                      List<String> backendResultMessageIds) implements AgentEventPayload {
+                      List<String> backendResultMessageIds, EventPayload.TaskCompletion completion) implements AgentEventPayload {
+        public TaskFailed(String backendTaskId, long revision, ChannelError error, List<String> backendResultMessageIds) {
+            this(backendTaskId, revision, error, backendResultMessageIds, null);
+        }
         public TaskFailed {
             Producer.requireText(backendTaskId, "task.failed.backendTaskId");
             if (revision < 1) {
@@ -92,7 +99,11 @@ public sealed interface AgentEventPayload permits AgentEventPayload.MessageReady
         }
     }
 
-    record TaskCancelled(String backendTaskId, long revision, String reason) implements AgentEventPayload {
+    record TaskCancelled(String backendTaskId, long revision, String reason,
+                         EventPayload.TaskCompletion completion) implements AgentEventPayload {
+        public TaskCancelled(String backendTaskId, long revision, String reason) {
+            this(backendTaskId, revision, reason, null);
+        }
         public TaskCancelled {
             Producer.requireText(backendTaskId, "task.cancelled.backendTaskId");
             if (revision < 1) {

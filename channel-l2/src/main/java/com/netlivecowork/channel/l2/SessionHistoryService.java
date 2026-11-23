@@ -34,6 +34,10 @@ final class SessionHistoryService {
                 "This adapter does not expose conversation history; use the session summary query");
     }
     SessionHistory.Page query(EntryConfig entry, TrustedCall call, SessionHistory.Request request, Runnable guard) {
+        return grants.withEntryPermissions(entry.entryRef(), false, () -> queryScoped(entry, call, request, guard));
+    }
+
+    private SessionHistory.Page queryScoped(EntryConfig entry, TrustedCall call, SessionHistory.Request request, Runnable guard) {
         requireFull(entry);guard.run();
         String basis;String backendCursor=null;Instant expiry;
         if(request.page().cursor()==null) {
@@ -66,7 +70,7 @@ final class SessionHistoryService {
             ChannelErrorCode.UNAVAILABLE,"Backend exceeded the requested history page limit");
         guard.run();requireFull(entry);
         String originalBasis=basis;Instant originalExpiry=expiry;
-        return db.tx(c->{
+        return grants.withEntryPermissions(entry.entryRef(), true, () -> db.tx(c->{
             guard.run();requireCurrent(originalBasis);
             var items=new ArrayList<SessionHistory.Message>();
             for(var item:page.items()) {
@@ -81,7 +85,7 @@ final class SessionHistoryService {
                     call.principalRef(),request.targetRef(),originalBasis,page.nextCursor(),originalExpiry.toString());
             }
             return new SessionHistory.Page(request.targetRef(),items,next);
-        });
+        }));
     }
     private void requireCurrent(String basis) {
         if(!grants.current(basis))throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,

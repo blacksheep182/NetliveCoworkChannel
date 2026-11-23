@@ -59,21 +59,22 @@ final class BackendEventCodec {
         } else {
             String task=id(Json.text(resource,"taskId"));
             switch(type) {
-                case "task.started", "task.cancelled" -> Json.onlyFields(payload,"revision");
+                case "task.started" -> Json.onlyFields(payload,"revision");
+                case "task.cancelled" -> Json.onlyFields(payload,"revision","completion");
                 case "task.waiting" -> {
                     Json.onlyFields(payload,"revision","reason");
                     if(!java.util.Set.of("interaction_required","external_dependency").contains(Json.text(payload,"reason")))
                         throw Json.invalid("invalid waiting reason");
                 }
                 case "task.completed" -> {
-                    Json.onlyFields(payload,"revision","resultMessageIds");
+                    Json.onlyFields(payload,"revision","resultMessageIds","completion");
                     JsonNode ids=Json.array(payload,"resultMessageIds");
                     ids.forEach(value -> { if(!value.isTextual())throw Json.invalid("invalid result message ID");id(value.textValue()); });
                     payload.set("backendResultMessageIds",ids);
                     payload.remove("resultMessageIds");
                 }
                 case "task.failed" -> {
-                    Json.onlyFields(payload,"revision","error");
+                    Json.onlyFields(payload,"revision","error","completion");
                     ObjectNode error=(ObjectNode)Json.obj(payload,"error");
                     Json.onlyFields(error,"code","message");
                     Json.text(error,"code");Json.text(error,"message");

@@ -175,7 +175,9 @@ public final class CommandInterpreter {
         if (binding == null || binding.targetRef() == null) throw new ChannelContractException(
             ChannelErrorCode.INVALID_ARGUMENT, "请先用 /list 和 /use 选择要处理的会话");
         String target = binding.targetRef();
-        if (!grants.canAct(tenant, workspace, caller, target, "target.read")) throw new ChannelContractException(
+        var scopeInfo = directory.scope(tenant, workspace, scope);
+        if (scopeInfo == null || !grants.canAct(tenant, workspace, scopeInfo.entryRef(), caller, target, "target.read"))
+            throw new ChannelContractException(
             ChannelErrorCode.PERMISSION_DENIED, "当前会话的访问权限已失效，请重新选择会话");
         var pending = requests.pendingInteractions(tenant, workspace, target).stream()
             .filter(item -> ContentJson.decodePrompt(Json.read(item.promptJson())).allowedResponses().stream()

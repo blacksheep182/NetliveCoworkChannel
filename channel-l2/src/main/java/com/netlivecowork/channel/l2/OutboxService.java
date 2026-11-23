@@ -170,9 +170,15 @@ public final class OutboxService {
             return true;
         }
         // Complete relation must retain the original operation basis; new grants cannot revive it.
-        boolean disclosure=destination.callerRef()!=null
-            ? grants.beginDelivery(row.deliveryId(), destination.callerRef())
-            : groupGrants!=null && groupGrants.currentDelivery(row.deliveryId(),grants);
+        boolean disclosure;
+        try {
+            disclosure=destination.callerRef()!=null
+                ? grants.beginDelivery(row.deliveryId(), destination.callerRef(), entry.entryRef())
+                : groupGrants!=null && groupGrants.currentDelivery(row.deliveryId(),grants);
+        } catch (com.netlivecowork.channel.contract.ChannelContractException unavailable) {
+            transientFailure(row, owner, attemptNumber, unavailable.getMessage());
+            return true;
+        }
         if (!disclosure) {
             finish(row, owner, attemptNumber, DeliveryRepository.DeliveryStatus.PAUSED,
                 "original disclosure authorization is no longer valid");

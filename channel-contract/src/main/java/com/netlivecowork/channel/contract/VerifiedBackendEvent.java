@@ -7,7 +7,24 @@ import java.time.Instant;
  */
 public record VerifiedBackendEvent(String backendEventRef, EventSource source, String operationRef,
                                    String targetRef, String taskRef, EventType type, Instant occurredAt,
-                                   EventOrder order, AgentEventPayload payload) {
+                                   EventOrder order, AgentEventPayload payload, Observation observation) {
+
+    public VerifiedBackendEvent(String backendEventRef, EventSource source, String operationRef,
+                                String targetRef, String taskRef, EventType type, Instant occurredAt,
+                                EventOrder order, AgentEventPayload payload) {
+        this(backendEventRef, source, operationRef, targetRef, taskRef, type, occurredAt, order, payload, null);
+    }
+
+    /** A Cowork-owned delivery basis, separate from the source event identity. */
+    public record Observation(String serviceRef, String sinkRef, String ref, long revision, String eventDigest) {
+        public Observation {
+            if (serviceRef == null || serviceRef.isBlank() || sinkRef == null || sinkRef.isBlank()
+                    || ref == null || !ref.matches("sub-[a-f0-9]{32}") || revision < 1
+                    || eventDigest == null || !eventDigest.matches("[a-f0-9]{64}")) {
+                throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, "Invalid observation reference");
+            }
+        }
+    }
 
     public VerifiedBackendEvent {
         Producer.requireText(backendEventRef, "backendEventRef");

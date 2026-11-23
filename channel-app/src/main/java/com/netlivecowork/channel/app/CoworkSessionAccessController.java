@@ -15,6 +15,73 @@ import org.springframework.web.bind.annotation.*;
 final class CoworkSessionAccessController {
     private final ChannelRuntime runtime;
     CoworkSessionAccessController(ChannelRuntime runtime){this.runtime=runtime;}
+    @PostMapping("/managed-entry")
+    ResponseEntity<ObjectNode> registerHostEntry(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false) String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false) String proof, @RequestBody JsonNode body) {
+        return respond(() -> {
+            Json.onlyFields(body,"entryRef","permissionRef","kind","relayDigest");
+            String permissionRef = Json.text(body,"permissionRef");
+            String entryRef = Json.optText(body,"entryRef");
+            runtime.l2().registerHostEntry(runtime.coworkManager(serviceRef, authorization, proof), serviceRef,
+                entryRef == null ? permissionRef : entryRef, permissionRef, Json.text(body,"kind"), Json.text(body,"relayDigest"));
+            return Json.obj().put("status", "completed");
+        });
+    }
+
+    @GetMapping("/managed-entry/workspaces")
+    ResponseEntity<ObjectNode> hostEntryWorkspaces(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false) String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false) String proof) {
+        return respond(() -> {
+            var response = Json.obj();
+            var items = response.putArray("items");
+            var manager=runtime.coworkManager(serviceRef, authorization, proof);
+            var selected=runtime.l2().personalCreationWorkspaces(manager);
+            for (var workspace : runtime.l2().hostEntryWorkspaces(manager, serviceRef))
+                items.add(Json.obj().put("workspaceRef", workspace.sessionWorkspaceRef()).put("label", workspace.label())
+                    .put("channelAllowed",selected.contains(workspace.sessionWorkspaceRef()))
+                    .put("channelGeneration",runtime.l2().personalAccessGeneration(manager,workspace.sessionWorkspaceRef(),true)));
+            return response;
+        });
+    }
+
+    @PostMapping("/managed-entry/completion-destination")
+    ResponseEntity<ObjectNode> completionDestination(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false) String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false) String proof, @RequestBody JsonNode body) {
+        return respond(() -> {
+            Json.onlyFields(body, "entryRef", "permissionRef", "targetRef", "kind");
+            var manager = runtime.coworkManager(serviceRef, authorization, proof);
+            String targetRef = Json.text(body, "targetRef");
+            var target = runtime.l3().registry().target(targetRef);
+            if (target == null || !target.enabled() || !serviceRef.equals(target.serviceRef()))
+                throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED, "The session is outside this Cowork host");
+            var destination = runtime.l2().completionDestination(manager, serviceRef, Json.text(body, "entryRef"),
+                Json.text(body, "permissionRef"), targetRef, Json.text(body, "kind"));
+            return Json.obj().put("sessionId", target.sessionId()).put("resourceEpoch", target.resourceEpoch())
+                .put("callerRef", destination.callerRef()).put("destinationRef", destination.destinationRef())
+                .put("destinationRevision", destination.destinationRevision()).put("sinkRef", runtime.completionSink(serviceRef));
+        });
+    }
+    @GetMapping("/managed-entry/sessions")
+    ResponseEntity<ObjectNode> hostEntrySessions(@PathVariable String serviceRef,
+            @RequestHeader(value="Authorization",required=false) String authorization,
+            @RequestHeader(value="X-Cowork-Delegation",required=false) String proof) {
+        return respond(() -> {
+            var response = Json.obj();
+            var items = response.putArray("items");
+            var manager=runtime.coworkManager(serviceRef, authorization, proof);
+            for (var item : runtime.l2().hostEntrySessions(manager).items()) {
+                var target = runtime.l3().registry().target(item.targetRef());
+                if (target != null && serviceRef.equals(target.serviceRef()) && !runtime.l2().groupSession(item.targetRef()))
+                    items.add(Json.obj().put("targetRef", item.targetRef()).put("label", item.label())
+                        .put("workspaceLabel", item.workspaceLabel()).put("state", item.status()).put("channelAllowed",item.selected())
+                        .put("channelGeneration",runtime.l2().personalAccessGeneration(manager,item.targetRef(),false)));
+            }
+            return response;
+        });
+    }
     @GetMapping
     ResponseEntity<ObjectNode> get(@PathVariable String serviceRef,@RequestHeader(value="Authorization",required=false)String authorization,@RequestHeader(value="X-Cowork-Delegation",required=false)String proof) {
         return respond(()->{
@@ -29,12 +96,22 @@ final class CoworkSessionAccessController {
     @PostMapping
     ResponseEntity<ObjectNode> save(@PathVariable String serviceRef,@RequestHeader(value="Authorization",required=false)String authorization,@RequestHeader(value="X-Cowork-Delegation",required=false)String proof,@RequestBody JsonNode body) {
         return respond(()->{
-            Json.onlyFields(body,"requestId","expectedRevision","targetRefs");
+            Json.onlyFields(body,"requestId","expectedRevision","targetRefs","workspaceRefs");
             if(!body.path("expectedRevision").isIntegralNumber() || !body.path("expectedRevision").canConvertToLong() || !body.path("targetRefs").isArray())throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"Current revision and exact selection are required");
             var refs=new ArrayList<String>();for(var ref:body.path("targetRefs")) {
                 if(!ref.isTextual())throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"Logical session references must be strings");refs.add(ref.asText());
             }
             var manager=runtime.coworkManager(serviceRef,authorization,proof);
+            if(body.has("workspaceRefs")) {
+                if(!body.path("workspaceRefs").isArray())throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"Workspace selections must be an array");
+                var workspaceRefs=new ArrayList<String>();
+                for(var ref:body.path("workspaceRefs")) {
+                    if(!ref.isTextual())throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"Workspace references must be strings");
+                    workspaceRefs.add(ref.asText());
+                }
+                return saved(runtime.l2().saveSessionAccess(manager,new SessionAccess.Save(Json.text(body,"requestId"),
+                    body.path("expectedRevision").asLong(),refs,workspaceRefs),serviceRef));
+            }
             return saved(runtime.l2().saveSessionAccess(manager,new SessionAccess.Save(Json.text(body,"requestId"),body.path("expectedRevision").asLong(),refs)));
         });
     }

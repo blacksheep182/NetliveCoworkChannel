@@ -295,14 +295,13 @@ public final class WeixinAdapterInstance implements AdapterInstance, ConnectionP
                 ChannelErrorCode.INVALID_ARGUMENT.error("delivery routing belongs to another entry")));
         }
         // 平台只能发文本：动作、图片、附件一律显式拒绝（INV-38）
-        String body;
+        String text;
         try {
-            body = PlainTextRenderer.body(delivery);
+            text = PlainTextRenderer.deliveryText(delivery);
         } catch (PlainTextRenderer.UnsupportedContent e) {
             return completed(new DeliveryReceipt.Failed(deliveryId,
                 ChannelErrorCode.UNSUPPORTED_CONTENT.error(e.getMessage())));
         }
-        String text = PlainTextRenderer.withSourceLabel(delivery.presentation().sourceLabel(), body);
         try {
             return CompletableFuture.supplyAsync(() -> send(delivery, text, attempt), executor);
         } catch (RejectedExecutionException e) {

@@ -43,6 +43,10 @@ public record VerifiedIngress(String requestId, String externalAccountKey, Subje
 
     /** 回复位置：必须来自已验证协议事实或授权登记。 */
     public record ExternalReplyTarget(Audience audience, String key, JsonNode protocolData) {
+        public static ExternalReplyTarget personalConversation(String key) {
+            return new ExternalReplyTarget(Audience.PERSONAL, key,
+                com.netlivecowork.channel.contract.json.Json.obj().put("conversation", key));
+        }
         public ExternalReplyTarget {
             if (audience == null) {
                 throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, "reply.audience is required");

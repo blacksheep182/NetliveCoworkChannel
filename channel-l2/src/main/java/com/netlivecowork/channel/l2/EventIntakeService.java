@@ -56,6 +56,8 @@ public final class EventIntakeService implements ApplicationIntakePort {
     private final Clock clock;
     private com.netlivecowork.channel.contract.port.AdapterCatalog catalog;
     void bindCatalog(com.netlivecowork.channel.contract.port.AdapterCatalog catalog) { this.catalog=catalog; }
+    private HostSubscriptionDeliveries hostSubscriptions;
+    void bindHostSubscriptions(HostSubscriptionDeliveries subscriptions) { this.hostSubscriptions = subscriptions; }
     private final L2Settings settings;
     private final DirectoryRepository directory;
     private final RequestRepository requests;
@@ -82,6 +84,9 @@ public final class EventIntakeService implements ApplicationIntakePort {
 
     @Override
     public CompletionStage<IntakeAck> receiveEvent(VerifiedBackendEvent event) {
+        if (event.observation() != null) {
+            return CompletableFuture.completedFuture(receiveObservation(event));
+        }
         String digest = Digests.sha256(Json.write(PacketJson.enc(event)));
         EventRepository.EventRow existing = events.find(event.source().resourceRef(),
             event.source().sourceEventId());
@@ -111,6 +116,38 @@ public final class EventIntakeService implements ApplicationIntakePort {
                 sanitize(e.getMessage()));
         }
         return CompletableFuture.completedFuture(IntakeAck.ok());
+    }
+
+    private IntakeAck receiveObservation(VerifiedBackendEvent observed) {
+        if (hostSubscriptions == null || observed.type().terminalTaskStatus() == null)
+            return IntakeAck.rejected(ChannelError.of(ChannelErrorCode.UNSUPPORTED_CAPABILITY,
+                "Cowork completion subscriptions are unavailable"));
+        var basis = hostSubscriptions.authorize(observed);
+        if (basis == null) return IntakeAck.ok();
+        var target = directory.target(observed.targetRef());
+        if (target == null) return IntakeAck.ok();
+        return db.tx(connection -> {
+            var source = observed.source();
+            var row = events.find(source.resourceRef(), source.sourceEventId());
+            var canonical = new VerifiedBackendEvent(row == null ? observed.backendEventRef() : row.backendEventRef(),
+                source, observed.operationRef(), observed.targetRef(), observed.taskRef(),
+                observed.type(), observed.occurredAt(), observed.order(), observed.payload());
+            String body = Json.write(PacketJson.enc(canonical));
+            String digest = Digests.sha256(body);
+            if (row == null) {
+                events.insert(new EventRepository.EventRow(source.resourceRef(), source.sourceEventId(),
+                    canonical.backendEventRef(), digest, body, null, null, EventRepository.EventState.PENDING_RELATION, null));
+            } else if (!row.payloadDigest().equals(digest)) {
+                return IntakeAck.rejected(ChannelError.of(ChannelErrorCode.REQUEST_CONFLICT,
+                    "Observed completion conflicts with the original source event"));
+            } else if (row.state() == EventRepository.EventState.PACKETIZED) {
+                var packet = PacketJson.decEvent(row.packetJson());
+                scheduleDeliveries(packet, target, target.tenantRef(), target.workspaceRef(), packet.context().taskRef(), basis);
+                return IntakeAck.ok();
+            }
+            normalizeInTx(canonical, target, target.tenantRef(), target.workspaceRef(), new ArrayList<>(), basis);
+            return IntakeAck.ok();
+        });
     }
 
     @Override
@@ -222,7 +259,7 @@ public final class EventIntakeService implements ApplicationIntakePort {
         String workspace = target.workspaceRef();
         // 跨层登记（L2 → L3）必须在本层事务提交之后执行：端口是异步契约，且两层不得共享事务。
         List<Runnable> afterCommit = new ArrayList<>();
-        Boolean normalized = db.tx(connection -> normalizeInTx(event, target, tenant, workspace, afterCommit));
+        Boolean normalized = db.tx(connection -> normalizeInTx(event, target, tenant, workspace, afterCommit, null));
         if (Boolean.TRUE.equals(normalized)) {
             afterCommit.forEach(Runnable::run);
             return true;
@@ -231,7 +268,7 @@ public final class EventIntakeService implements ApplicationIntakePort {
     }
 
     private Boolean normalizeInTx(VerifiedBackendEvent event, DirectoryRepository.TargetRow target, String tenant,
-                                  String workspace, List<Runnable> afterCommit) {
+                                  String workspace, List<Runnable> afterCommit, HostSubscriptionDeliveries.Basis observed) {
         // 只允许未完成规范化的状态进入：已 PACKETIZED/SKIPPED_STALE/QUARANTINED 的事件不得被
         // 二次规范化覆盖（否则会清空 packetId 并重复投递）。
         EventRepository.EventRow current = events.find(event.source().resourceRef(),
@@ -290,7 +327,7 @@ public final class EventIntakeService implements ApplicationIntakePort {
             event.source().sourceEventId()), event.occurredAt(), event.order(), payload);
         events.markState(event.source().resourceRef(), event.source().sourceEventId(),
             EventRepository.EventState.PACKETIZED, packetId, Json.write(PacketJson.enc(packet)), null);
-        scheduleDeliveries(packet, target, tenant, workspace, taskRef);
+        scheduleDeliveries(packet, target, tenant, workspace, taskRef, observed);
         return true;
     }
 
@@ -368,11 +405,11 @@ public final class EventIntakeService implements ApplicationIntakePort {
                 value.reason());
             case AgentEventPayload.TaskCompleted value -> new EventPayload.TaskCompleted(value.revision(),
                 resolveMessages(targetRef, flowId, taskRef, value.backendResultMessageIds()),
-                mapFiles(tenant, workspace, targetRef, value.files(), afterCommit));
+                mapFiles(tenant, workspace, targetRef, value.files(), afterCommit), value.completion());
             case AgentEventPayload.TaskFailed value -> new EventPayload.TaskFailed(value.revision(),
-                value.error(), resolveMessages(targetRef, flowId, taskRef, value.backendResultMessageIds()));
+                value.error(), resolveMessages(targetRef, flowId, taskRef, value.backendResultMessageIds()), value.completion());
             case AgentEventPayload.TaskCancelled value -> new EventPayload.TaskCancelled(value.revision(),
-                value.reason());
+                value.reason(), value.completion());
             case AgentEventPayload.TaskArtifact value -> new EventPayload.TaskArtifact(
                 mapFiles(tenant, workspace, targetRef, value.files(), afterCommit));
             case AgentEventPayload.InteractionRequired value -> {
@@ -491,7 +528,7 @@ public final class EventIntakeService implements ApplicationIntakePort {
     // ---- 投递安排 --------------------------------------------------------------------
 
     private void scheduleDeliveries(EventPacket packet, DirectoryRepository.TargetRow target, String tenant,
-                                    String workspace, String taskRef) {
+                                    String workspace, String taskRef, HostSubscriptionDeliveries.Basis observed) {
         Map<String, DeliveryPlan> plans = new LinkedHashMap<>();
         String flowId = packet.correlation().flowId();
         for (RequestRepository.ReplyRelation relation : requests.replyRelationsForFlow(flowId)) {
@@ -520,6 +557,15 @@ public final class EventIntakeService implements ApplicationIntakePort {
                     DeliveryRepository.RelationType.SUBSCRIPTION, subscription.subscriptionRef(),
                     subscription.generation(), subscription.subscriberRef(), true));
         }
+        DeliveryPlan observedPlan = null;
+        if (observed != null) {
+            observedPlan = plans.computeIfAbsent(key(observed.entryRef(), observed.destinationRef(),
+                    observed.destinationRevision()), ignored -> new DeliveryPlan(observed.entryRef(),
+                    observed.destinationRef(), observed.destinationRevision()));
+            observedPlan.relations.add(new DeliveryRepository.RelationRow(null,
+                DeliveryRepository.RelationType.SUBSCRIPTION, observed.subscriptionRef(), observed.revision(),
+                observed.callerRef(), true));
+        }
         for (DeliveryPlan plan : plans.values()) {
             String deliveryId = "delivery-" + Digests.sha256(String.join("\u0000", tenant, workspace,
                 plan.entryRef, plan.destinationRef, String.valueOf(plan.destinationRevision),
@@ -530,7 +576,7 @@ public final class EventIntakeService implements ApplicationIntakePort {
                 ? actionsFor(packet, plan) : List.of();
             ChannelDelivery delivery = new ChannelDelivery("1", deliveryId, packet,
                 new ChannelDelivery.Routing(plan.entryRef, plan.destinationRef, plan.destinationRevision),
-                presentation(packet,target,taskRef,plan), actions);
+                presentation(packet,target,taskRef,plan,plan == observedPlan), actions);
             if (!currentDestination) {
                 // 目的地身份版本已变：不转发给新身份，但保留可见的暂停记录（INV-13、INV-39）。
                 deliveries.insertDelivery(new DeliveryRepository.DeliveryRow(deliveryId, tenant, workspace,
@@ -548,13 +594,15 @@ public final class EventIntakeService implements ApplicationIntakePort {
                 deliveries.addRelation(new DeliveryRepository.RelationRow(deliveryId, relation.type(),
                     relation.relationRef(), relation.generation(), relation.authorizedBy(), true));
             }
+            if (plan == observedPlan) hostSubscriptions.remember(deliveryId, observed);
             if (inserted) {
                 deliveries.cancelUnbackedDeliveries();
             }
         }
     }
 
-    private ChannelDelivery.Presentation presentation(EventPacket packet,DirectoryRepository.TargetRow target,String taskRef,DeliveryPlan plan) {
+    private ChannelDelivery.Presentation presentation(EventPacket packet,DirectoryRepository.TargetRow target,String taskRef,
+                                                       DeliveryPlan plan, boolean sessionSubscription) {
         if(catalog!=null) {
             var row=db.queryOne("SELECT adapter_type FROM l2_entries WHERE entry_ref=?",r->r.getString(1),plan.entryRef);
             var descriptor=row==null?null:catalog.descriptor(row);
@@ -574,8 +622,10 @@ public final class EventIntakeService implements ApplicationIntakePort {
         }
         var source=new ChannelDelivery.Source(nav==null?null:Json.optText(nav.path("workspace"),"sessionWorkspaceRef"),
             nav==null?null:Json.optText(nav.path("workspace"),"label"),target.label(),summary);
-        var notice=packet.type()==EventType.TASK_COMPLETED && taskRef!=null
-            ?new ChannelDelivery.Notification("task_completed",plan.relations.stream().anyMatch(r->r.type()==DeliveryRepository.RelationType.REPLY)?"request_reply":"task_subscription",new ChannelDelivery.Navigation("open_source_session")):null;
+        var terminal = packet.type().terminalTaskStatus();
+        var notice=terminal!=null && taskRef!=null
+            ?new ChannelDelivery.Notification("task_" + terminal.wire(),plan.relations.stream().anyMatch(r->r.type()==DeliveryRepository.RelationType.REPLY)?"request_reply":
+                (sessionSubscription ? "session_subscription" : "task_subscription"),new ChannelDelivery.Navigation("open_source_session")):null;
         return new ChannelDelivery.Presentation(target.label(),source,notice);
     }
 

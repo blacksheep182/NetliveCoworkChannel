@@ -247,7 +247,7 @@ public final class BackendDispatcher {
                 com.netlivecowork.channel.infra.Ids.next("navread"),null),
             new com.netlivecowork.channel.contract.Producer(com.netlivecowork.channel.contract.Layer.L2,settings.componentRef()),
             com.netlivecowork.channel.contract.Actor.of(caller),new com.netlivecowork.channel.contract.CommandPayload.SessionGet());
-        grants.capture(packet);
+        grants.capture(packet, entry.entryRef());
         if (!grants.begin(packet.context().operationRef(),()->true)) throw new com.netlivecowork.channel.contract.ChannelContractException(
             ChannelErrorCode.PERMISSION_DENIED,"navigation query is no longer authorized");
         try {

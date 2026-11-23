@@ -87,6 +87,10 @@ public final class SubmitService {
     }
 
     public ChannelResponse submit(Submission submission, IngressRequest request) {
+        return grants.withEntryPermissions(submission.entry().entryRef(), false, () -> submitScoped(submission, request));
+    }
+
+    private ChannelResponse submitScoped(Submission submission, IngressRequest request) {
         EntryConfig entry = submission.entry();
         DirectoryRepository.AdmissionRow admission = submission.admission();
         String tenant = entry.tenantRef();
@@ -267,6 +271,11 @@ public final class SubmitService {
     }
 
     public ChannelResponse lookup(EntryConfig entry, String callerRef, long epoch, String requestId) {
+        return grants.withEntryPermissions(entry.entryRef(), false,
+            () -> lookupScoped(entry, callerRef, epoch, requestId));
+    }
+
+    private ChannelResponse lookupScoped(EntryConfig entry, String callerRef, long epoch, String requestId) {
         var created=creation.lookup(entry,callerRef,requestId);if(created!=null)return created;
         RequestRepository.InboxRow row = requests.inboxByRequest(entry.entryRef(), epoch, callerRef, requestId);
         if (row == null) {
@@ -315,32 +324,32 @@ public final class SubmitService {
                         return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Original owner authorization changed"));
                     return response;
                 }
-                if(completed.result() instanceof OperationResult.SessionCreate create && !grants.canAct(row.tenantRef(),row.workspaceRef(),row.callerRef(),create.session().targetRef(),"target.read"))
+                if(completed.result() instanceof OperationResult.SessionCreate create && !grants.canAct(row.tenantRef(),row.workspaceRef(),row.entryRef(),row.callerRef(),create.session().targetRef(),"target.read"))
                     return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Created session access was revoked"));
                 if (completed.result() instanceof OperationResult.WorkspaceList list) {
-                    var allowed=navigation.visibleWorkspaces(row.tenantRef(),row.workspaceRef(),row.callerRef());
+                    var allowed=navigation.visibleWorkspaces(row.tenantRef(),row.workspaceRef(),row.entryRef(),row.callerRef());
                     var selection=list.selection();
                     if(selection.sessionWorkspaceRef()!=null && !allowed.contains(selection.sessionWorkspaceRef()))
                         return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Original workspace authorization was revoked; query current selection"));
-                    if(selection.targetRef()!=null && !grants.canAct(row.tenantRef(),row.workspaceRef(),row.callerRef(),selection.targetRef(),"target.read"))
+                    if(selection.targetRef()!=null && !grants.canAct(row.tenantRef(),row.workspaceRef(),row.entryRef(),row.callerRef(),selection.targetRef(),"target.read"))
                         return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Original selection authorization was revoked; query current selection"));
                     return new ChannelResponse.Completed(requestId,new OperationResult.WorkspaceList(list.items().stream().filter(w->allowed.contains(w.sessionWorkspaceRef())).toList(),selection));
                 }
                 if (completed.result() instanceof OperationResult.SelectionGet get) {
                     var selected=get.selection();
-                    if(selected.sessionWorkspaceRef()!=null && !navigation.visibleWorkspaces(row.tenantRef(),row.workspaceRef(),row.callerRef()).contains(selected.sessionWorkspaceRef())
-                        || selected.targetRef()!=null && !grants.canAct(row.tenantRef(),row.workspaceRef(),row.callerRef(),selected.targetRef(),"target.read"))
+                    if(selected.sessionWorkspaceRef()!=null && !navigation.visibleWorkspaces(row.tenantRef(),row.workspaceRef(),row.entryRef(),row.callerRef()).contains(selected.sessionWorkspaceRef())
+                        || selected.targetRef()!=null && !grants.canAct(row.tenantRef(),row.workspaceRef(),row.entryRef(),row.callerRef(),selected.targetRef(),"target.read"))
                         return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Original selection authorization was revoked; query current selection"));
                 }
-                if (completed.result() instanceof OperationResult.SessionSelect select && !grants.canAct(row.tenantRef(),row.workspaceRef(),row.callerRef(),select.targetRef(),"target.read"))
+                if (completed.result() instanceof OperationResult.SessionSelect select && !grants.canAct(row.tenantRef(),row.workspaceRef(),row.entryRef(),row.callerRef(),select.targetRef(),"target.read"))
                     return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Original selection authorization was revoked"));
-                if (completed.result() instanceof OperationResult.WorkspaceSelect select && !navigation.visibleWorkspaces(row.tenantRef(),row.workspaceRef(),row.callerRef()).contains(select.selection().sessionWorkspaceRef()))
+                if (completed.result() instanceof OperationResult.WorkspaceSelect select && !navigation.visibleWorkspaces(row.tenantRef(),row.workspaceRef(),row.entryRef(),row.callerRef()).contains(select.selection().sessionWorkspaceRef()))
                     return new ChannelResponse.Rejected(requestId,ChannelErrorCode.PERMISSION_DENIED.error("Original workspace authorization was revoked"));
                 if (completed.result() instanceof OperationResult.SessionList list) {
                     return new ChannelResponse.Completed(requestId, new OperationResult.SessionList(
                         list.items().stream().filter(item -> groupScope!=null
                             ? groupGrants.forTarget(groupScope,item.targetRef())!=null
-                            : grants.canAct(row.tenantRef(), row.workspaceRef(),row.callerRef(), item.targetRef(), "target.read"))
+                            : grants.canAct(row.tenantRef(), row.workspaceRef(),row.entryRef(),row.callerRef(), item.targetRef(), "target.read"))
                             .toList(), list.nextCursor()));
                 }
                 if (row.status() != RequestRepository.OperationStatus.LOCAL_DONE && !grants.current(row.operationRef()))
@@ -380,8 +389,8 @@ public final class SubmitService {
                 "session.select requires a scope");
         }
         DirectoryRepository.ScopeRow scope = requireScope(tenant, workspace, scopeRef);
-        DirectoryRepository.TargetRow target = requireTarget(tenant, workspace, select.targetRef(), admission.callerRef(), "session.select");
-        requireTarget(tenant, workspace, select.targetRef(), admission.callerRef(), "target.read");
+        DirectoryRepository.TargetRow target = requireTarget(tenant, workspace, admission.entryRef(), select.targetRef(), admission.callerRef(), "session.select");
+        requireTarget(tenant, workspace, admission.entryRef(), select.targetRef(), admission.callerRef(), "target.read");
         if (scope.shared()) throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED, "verified shared membership is required");
         var item=metadata.stream().filter(s->select.targetRef().equals(s.targetRef())).findFirst()
             .orElseThrow(()->new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Session metadata is not authorized"));
@@ -403,6 +412,10 @@ public final class SubmitService {
     private void requirePrivateScope(String tenant,String workspace,String scope) {
         if(scope==null)throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"Navigation requires an interaction scope");
         if(requireScope(tenant,workspace,scope).shared())throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Verified shared membership is required");
+    }
+
+    void ensureCompletionSource(EntryConfig entry, String caller, String target) {
+        navigation.ensureSource(entry, caller, target);
     }
 
     private OperationResult subscribe(EntryConfig entry, DirectoryRepository.AdmissionRow admission,
@@ -430,7 +443,7 @@ public final class SubmitService {
                 throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED, "unknown task");
             }
         } else if (create.resource() instanceof SubscriptionResource.Session session) {
-            requireTarget(tenant, workspace, session.targetRef(), admission.callerRef(), "events.observe");
+            requireTarget(tenant, workspace, admission.entryRef(), session.targetRef(), admission.callerRef(), "events.observe");
             // 会话级持续观察必须先在后端持久登记观察范围与起点，未完成登记不宣称订阅生效（INV-65）。
             // 该流程需要“先记 pending 意图 → L3 登记 → 激活”的两段协调，当前版本尚未接线。
             throw new ChannelContractException(ChannelErrorCode.UNSUPPORTED_CAPABILITY,
@@ -475,7 +488,7 @@ public final class SubmitService {
         return scope;
     }
 
-    private DirectoryRepository.TargetRow requireTarget(String tenant, String workspace, String targetRef,
+    private DirectoryRepository.TargetRow requireTarget(String tenant, String workspace, String entryRef, String targetRef,
                                                         String callerRef, String action) {
         DirectoryRepository.TargetRow target = directory.target(targetRef);
         if (target == null || !target.tenantRef().equals(tenant) || !target.workspaceRef().equals(workspace)) {
@@ -484,7 +497,7 @@ public final class SubmitService {
         }
         // 有可信归属时：所有者本人，或覆盖该动作的有效个人 Grant 才放行（v2.11 §2.4）。
         String owner = directory.targetOwner(targetRef);
-        if (!grants.canAct(tenant, workspace, callerRef, targetRef, action)) {
+        if (!grants.canAct(tenant, workspace, entryRef, callerRef, targetRef, action)) {
             throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,
                 "caller is not authorized for this target action (owner=" + owner + ", action=" + action + ")");
         }
@@ -616,8 +629,8 @@ public final class SubmitService {
                     groupGrants.requireTarget(groupGrant,scopeRef,targetRef);
                 }
                 String principal=shared?groupGrant.ownerRef():admission.callerRef();
-                requireTarget(tenant, workspace, targetRef, principal, "input.submit");
-                requireTarget(tenant, workspace, targetRef, principal, "target.read");
+                requireTarget(tenant, workspace, admission.entryRef(), targetRef, principal, "input.submit");
+                requireTarget(tenant, workspace, admission.entryRef(), targetRef, principal, "target.read");
                 requireBoundCaller(admission.callerRef());
                 DirectoryRepository.DestinationRow destination = requireDestination(tenant, workspace,
                     replyTarget, entry.entryRef());
@@ -642,7 +655,7 @@ public final class SubmitService {
                     groupGrant=groupGrants.forTarget(scopeRef,targetRef);
                     groupGrants.requireTarget(groupGrant,scopeRef,targetRef);
                 }
-                requireTarget(tenant, workspace, targetRef, shared?groupGrant.ownerRef():admission.callerRef(), "target.read");
+                requireTarget(tenant, workspace, admission.entryRef(), targetRef, shared?groupGrant.ownerRef():admission.callerRef(), "target.read");
                 payload = new CommandPayload.SessionGet();
             }
             case ChannelOperation.SessionResume resume -> {
@@ -652,8 +665,8 @@ public final class SubmitService {
                     groupGrants.requireTarget(groupGrant,scopeRef,targetRef);
                 }
                 String principal=shared?groupGrant.ownerRef():admission.callerRef();
-                requireTarget(tenant,workspace,targetRef,principal,"target.read");
-                requireTarget(tenant,workspace,targetRef,principal,"input.submit");
+                requireTarget(tenant,workspace,admission.entryRef(),targetRef,principal,"target.read");
+                requireTarget(tenant,workspace,admission.entryRef(),targetRef,principal,"input.submit");
                 payload = new CommandPayload.SessionResume();
             }
             case ChannelOperation.TaskGet get -> {
@@ -749,7 +762,7 @@ public final class SubmitService {
                     if(binding==null || !java.util.Objects.equals(binding.targetRef(),packet.context().targetRef()))throw NavigationService.conflict();
                 }
             }
-            grants.capture(packet);
+            grants.capture(packet, admission.entryRef());
             if(groupGrant!=null)groupGrants.recordOperation(operationRef,groupGrant,packet.context().targetRef(),
                 admission.identitySubjectKey(),groupAction(packet));
             requests.saveInbox(new RequestRepository.InboxRow(dedupeKey, entry.tenantRef(),
@@ -795,7 +808,7 @@ public final class SubmitService {
         db.tx(connection -> {
         requireBindingCurrent(entry, admission);
         if(groupGrant!=null)groupGrants.requireTarget(groupGrant,admission.scopeRef(),packet.context().targetRef());
-        grants.capture(packet);
+        grants.capture(packet, admission.entryRef());
         if(groupGrant!=null)groupGrants.recordOperation(operationRef,groupGrant,packet.context().targetRef(),
             admission.identitySubjectKey(),groupAction(packet));
         requests.saveInbox(new RequestRepository.InboxRow(dedupeKey, entry.tenantRef(), entry.workspaceRef(),

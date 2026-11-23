@@ -33,17 +33,28 @@ public sealed interface EventPayload permits EventPayload.MessageReady, EventPay
     record TaskWaiting(long revision, String reason) implements EventPayload {
     }
 
+    /** Text captured from this task's input and terminal event. */
+    record TaskCompletion(String query, String result) {}
+
     /** 终态。resultMessageRefs 引用结果消息，不重复展示相同内容（INV-26）。 */
-    record TaskCompleted(long revision, java.util.List<String> resultMessageRefs, java.util.List<String> fileRefs)
+    record TaskCompleted(long revision, java.util.List<String> resultMessageRefs, java.util.List<String> fileRefs,
+                         TaskCompletion completion)
         implements EventPayload {
+        public TaskCompleted(long revision, java.util.List<String> resultMessageRefs, java.util.List<String> fileRefs) {
+            this(revision, resultMessageRefs, fileRefs, null);
+        }
         public TaskCompleted {
             resultMessageRefs = resultMessageRefs == null ? java.util.List.of() : java.util.List.copyOf(resultMessageRefs);
             fileRefs = fileRefs == null ? java.util.List.of() : java.util.List.copyOf(fileRefs);
         }
     }
 
-    record TaskFailed(long revision, ChannelError error, java.util.List<String> resultMessageRefs)
+    record TaskFailed(long revision, ChannelError error, java.util.List<String> resultMessageRefs,
+                      TaskCompletion completion)
         implements EventPayload {
+        public TaskFailed(long revision, ChannelError error, java.util.List<String> resultMessageRefs) {
+            this(revision, error, resultMessageRefs, null);
+        }
         public TaskFailed {
             if (error == null) {
                 throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, "task.failed requires error");
@@ -52,7 +63,8 @@ public sealed interface EventPayload permits EventPayload.MessageReady, EventPay
         }
     }
 
-    record TaskCancelled(long revision, String reason) implements EventPayload {
+    record TaskCancelled(long revision, String reason, TaskCompletion completion) implements EventPayload {
+        public TaskCancelled(long revision, String reason) { this(revision, reason, null); }
     }
 
     /** 不可变产物事实：按源事件身份及 taskRef+fileRef 幂等登记，无任务 revision。 */

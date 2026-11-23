@@ -1,5 +1,6 @@
 package com.netlivecowork.channel.l1.render;
 
+import com.netlivecowork.channel.contract.ChannelDelivery;
 import com.netlivecowork.channel.contract.ContentPart;
 import com.netlivecowork.channel.contract.EventPacket;
 import com.netlivecowork.channel.contract.EventPayload;
@@ -8,6 +9,7 @@ import com.netlivecowork.channel.contract.InteractionRequiredPayload;
 import com.netlivecowork.channel.contract.QuestionItem;
 import java.util.List;
 import java.util.Set;
+import java.util.StringJoiner;
 
 /**
  * EventPacket → 纯文本。文本平台无法表达非文本内容或交互动作时必须显式失败（INV-38），
@@ -26,15 +28,40 @@ public final class PlainTextRenderer {
     private PlainTextRenderer() {
     }
 
-    public static String body(com.netlivecowork.channel.contract.ChannelDelivery delivery) {
-        var presentation=delivery.presentation();
-        if(presentation.notification()==null)return body(delivery.packet());
-        var source=presentation.source();
-        var parts=new java.util.ArrayList<String>();
-        parts.add("task_subscription".equals(presentation.notification().origin())?"来自任务订阅：任务已完成":"任务已完成");
-        if(source!=null)for(String label:new String[]{source.workspaceLabel(),source.sessionLabel(),source.taskSummary()})
-            if(label!=null&&!label.isBlank())parts.add(label);
-        return String.join("｜",parts)+"。结果按原会话消息送达；可通过 /list 选择原会话查看。";
+    public static String body(ChannelDelivery delivery) {
+        var receipt = delivery.completionReceipt();
+        if (receipt == null) return body(delivery.packet());
+
+        var lines = new StringJoiner("\n");
+        lines.add(switch (receipt.origin()) {
+            case "session_subscription" -> "来自会话订阅";
+            case "task_subscription" -> "来自任务订阅";
+            default -> "来自会话回复";
+        });
+        addField(lines, "工作空间", receipt.workspaceLabel());
+        addField(lines, "会话", receipt.sessionLabel());
+        addField(lines, "用户提问", receipt.query());
+        lines.add("任务状态：" + switch (receipt.status()) {
+            case "failed" -> "失败";
+            case "cancelled" -> "已取消";
+            default -> "已完成";
+        });
+        if (receipt.result() != null && !receipt.result().isBlank()) {
+            lines.add("执行结果：\n" + receipt.result());
+        } else {
+            lines.add("可在原会话查看执行详情。");
+        }
+        return lines.toString();
+    }
+
+    private static void addField(StringJoiner lines, String label, String value) {
+        if (value != null && !value.isBlank()) lines.add(label + "：" + value);
+    }
+
+    public static String deliveryText(ChannelDelivery delivery) {
+        String body = body(delivery);
+        return delivery.presentation().notification() == null
+            ? withSourceLabel(delivery.presentation().sourceLabel(), body) : body;
     }
 
     /** 渲染正文（不含来源标注）。 */

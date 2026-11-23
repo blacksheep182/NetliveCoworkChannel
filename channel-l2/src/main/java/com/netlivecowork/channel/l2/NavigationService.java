@@ -24,28 +24,36 @@ final class NavigationService {
         var result=new ArrayList<SessionSummary>();
         for(var row:directory.targets(entry.tenantRef(),entry.workspaceRef())) {
             if (target!=null&&!target.equals(row.targetRef())) continue;
-            if (!grants.canAct(entry.tenantRef(),entry.workspaceRef(),caller,row.targetRef(),"target.read")) continue;
+            if (!grants.canAct(entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),caller,row.targetRef(),"target.read")) continue;
             var item=dispatcher.readSession(entry,caller,row.targetRef());
-            db.update("INSERT INTO l2_navigation_catalog VALUES(?,?,?) ON CONFLICT(target_ref) DO UPDATE SET workspace_ref=excluded.workspace_ref,summary_json=excluded.summary_json",
-                item.targetRef(),item.workspace()==null?null:item.workspace().sessionWorkspaceRef(),Json.write(PacketJson.enc(item)));
+            rememberSource(item);
             result.add(item);
         }
         return List.copyOf(result);
     }
-    List<SessionSummary> authorized(EntryConfig entry,String caller,List<SessionSummary> items) {
-        return items.stream().filter(s->grants.canAct(entry.tenantRef(),entry.workspaceRef(),caller,s.targetRef(),"target.read")).toList();
+    void ensureSource(EntryConfig entry, String caller, String target) {
+        if (db.queryOne("SELECT target_ref FROM l2_navigation_catalog WHERE target_ref=?", r -> r.getString(1), target) == null)
+            rememberSource(dispatcher.readSession(entry, caller, target));
     }
-    Set<String> visibleWorkspaces(String tenant,String workspace,String caller) {
+    private void rememberSource(SessionSummary item) {
+        db.update("INSERT INTO l2_navigation_catalog VALUES(?,?,?) ON CONFLICT(target_ref) DO UPDATE SET workspace_ref=excluded.workspace_ref,summary_json=excluded.summary_json",
+            item.targetRef(),item.workspace()==null?null:item.workspace().sessionWorkspaceRef(),Json.write(PacketJson.enc(item)));
+    }
+    List<SessionSummary> authorized(EntryConfig entry,String caller,List<SessionSummary> items) {
+        return items.stream().filter(s->grants.canAct(entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),caller,s.targetRef(),"target.read")).toList();
+    }
+    Set<String> visibleWorkspaces(String tenant,String workspace,String entryRef,String caller) {
         var result=new HashSet<String>();
-        for(var target:directory.targets(tenant,workspace)) if(grants.canAct(tenant,workspace,caller,target.targetRef(),"target.read")) {
+        for(var target:directory.targets(tenant,workspace)) if(grants.canAct(tenant,workspace,entryRef,caller,target.targetRef(),"target.read")) {
             String ref=db.queryOne("SELECT workspace_ref FROM l2_navigation_catalog WHERE target_ref=?",r->r.getString(1),target.targetRef());
             if(ref!=null)result.add(ref);
         }
-        result.addAll(creationWorkspaces(tenant,workspace,caller).stream().map(SessionWorkspace::sessionWorkspaceRef).toList());
+        result.addAll(creationWorkspaces(tenant,workspace,entryRef,caller).stream().map(SessionWorkspace::sessionWorkspaceRef).toList());
         return result;
     }
-    private List<SessionWorkspace> creationWorkspaces(String tenant,String workspace,String caller) {
-        return db.query("SELECT ref,label FROM l2_creation_workspaces WHERE tenant=? AND deployment=? AND principal=?",r->new SessionWorkspace(r.getString(1),r.getString(2),true),tenant,workspace,caller);
+    private List<SessionWorkspace> creationWorkspaces(String tenant,String workspace,String entryRef,String caller) {
+        return db.query("SELECT ref,label FROM l2_creation_workspaces WHERE tenant=? AND deployment=? AND principal=?",r->new SessionWorkspace(r.getString(1),r.getString(2),true),tenant,workspace,caller).stream()
+            .filter(w -> grants.canCreateInWorkspace(entryRef, w.sessionWorkspaceRef())).toList();
     }
     NavigationSelection selection(EntryConfig entry,String scope,String caller,List<SessionSummary> items) {
         var current=directory.binding(entry.tenantRef(),entry.workspaceRef(),scope);
@@ -58,7 +66,7 @@ final class NavigationService {
                 return snapshot(entry,scope);
             }
         }
-        if(workspace!=null && !visibleWorkspaces(entry.tenantRef(),entry.workspaceRef(),caller).contains(workspace) && items.stream().noneMatch(s->s.workspace()!=null&&workspace.equals(s.workspace().sessionWorkspaceRef()))) {
+        if(workspace!=null && !visibleWorkspaces(entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),caller).contains(workspace) && items.stream().noneMatch(s->s.workspace()!=null&&workspace.equals(s.workspace().sessionWorkspaceRef()))) {
             directory.compareAndSetSelection(entry.tenantRef(),entry.workspaceRef(),scope,null,null,current.revision(),caller);
         } else if(target!=null && items.stream().noneMatch(s->target.equals(s.targetRef()) && (workspace==null || s.workspace()!=null&&workspace.equals(s.workspace().sessionWorkspaceRef())))) {
             directory.compareAndSetSelection(entry.tenantRef(),entry.workspaceRef(),scope,workspace,null,current.revision(),caller);
@@ -73,9 +81,9 @@ final class NavigationService {
     NavigationSelection current(EntryConfig entry,String scope,String caller) {
         var selected=snapshot(entry,scope);
         String workspace=selected.sessionWorkspaceRef(),target=selected.targetRef();
-        if(workspace!=null&&!visibleWorkspaces(entry.tenantRef(),entry.workspaceRef(),caller).contains(workspace)) {
+        if(workspace!=null&&!visibleWorkspaces(entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),caller).contains(workspace)) {
             workspace=null;target=null;
-        } else if(target!=null&&!grants.canAct(entry.tenantRef(),entry.workspaceRef(),caller,target,"target.read")) {
+        } else if(target!=null&&!grants.canAct(entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),caller,target,"target.read")) {
             target=null;
         }
         if(!Objects.equals(workspace,selected.sessionWorkspaceRef())||!Objects.equals(target,selected.targetRef()))
@@ -86,13 +94,13 @@ final class NavigationService {
         var items=authorized(entry,caller,input);
         if(items.stream().anyMatch(s->s.workspace()==null))throw new ChannelContractException(ChannelErrorCode.UNSUPPORTED_CAPABILITY,"Backend does not expose verified session workspaces");
         var merged=new HashMap<String,SessionWorkspace>();items.stream().map(SessionSummary::workspace).forEach(w->merged.put(w.sessionWorkspaceRef(),w));
-        creationWorkspaces(entry.tenantRef(),entry.workspaceRef(),caller).forEach(w->merged.put(w.sessionWorkspaceRef(),w));
+        creationWorkspaces(entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),caller).forEach(w->merged.put(w.sessionWorkspaceRef(),w));
         var workspaces=merged.values().stream().sorted(Comparator.comparing(SessionWorkspace::label).thenComparing(SessionWorkspace::sessionWorkspaceRef)).toList();
         remember(scope,"workspace",workspaces.stream().map(SessionWorkspace::sessionWorkspaceRef).toList());
         return new OperationResult.WorkspaceList(workspaces,selection(entry,scope,caller,items));
     }
     OperationResult.WorkspaceSelect select(EntryConfig entry,String scope,String caller,ChannelOperation.WorkspaceSelect op,List<SessionSummary> items) {
-        if(!visibleWorkspaces(entry.tenantRef(),entry.workspaceRef(),caller).contains(op.sessionWorkspaceRef()) && authorized(entry,caller,items).stream().noneMatch(s->s.workspace()!=null&&op.sessionWorkspaceRef().equals(s.workspace().sessionWorkspaceRef())))
+        if(!visibleWorkspaces(entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),caller).contains(op.sessionWorkspaceRef()) && authorized(entry,caller,items).stream().noneMatch(s->s.workspace()!=null&&op.sessionWorkspaceRef().equals(s.workspace().sessionWorkspaceRef())))
             throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Workspace has no authorized session");
         var current=snapshot(entry,scope);
         if(current.revision()!=op.expectedBindingRevision())throw conflict();

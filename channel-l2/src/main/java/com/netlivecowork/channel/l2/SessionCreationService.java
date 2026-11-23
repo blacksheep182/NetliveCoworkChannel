@@ -25,6 +25,7 @@ final class SessionCreationService {
         var columns=db.query("PRAGMA table_info(l2_session_creations)",rs->rs.getString("name"));
         if(!columns.contains("effective_owner"))db.ddl("ALTER TABLE l2_session_creations ADD COLUMN effective_owner TEXT");
         if(!columns.contains("group_grant_ref"))db.ddl("ALTER TABLE l2_session_creations ADD COLUMN group_grant_ref TEXT");
+        if (!columns.contains("entry_generation")) db.ddl("ALTER TABLE l2_session_creations ADD COLUMN entry_generation INTEGER");
     }
     String key(EntryConfig entry,String caller,String request) {
         return Digests.sha256(SubmitService.requestKey(entry,caller,request));
@@ -32,12 +33,16 @@ final class SessionCreationService {
     boolean exists(EntryConfig entry,String caller,String request) {
         return row(key(entry,caller,request))!=null;
     }
-    private record Row(String key,String caller,String effectiveOwner,String groupGrantRef,String request,String digest,String scope,String workspace,String prompt,long revision,
+    private record Row(String key,String caller,String effectiveOwner,String groupGrantRef,String request,String digest,String scope,String workspace,String prompt,long revision,Long entryGeneration,
                        String subjectKind,String subjectKey,long identityRevision,String destination,long destinationRevision,String response) {}
     private Row row(String key) {
-        return db.queryOne("SELECT * FROM l2_session_creations WHERE request_key=?",r->new Row(key,r.getString("caller"),r.getString("effective_owner"),r.getString("group_grant_ref"),r.getString("request_id"),
-            r.getString("digest"),r.getString("scope_ref"),r.getString("workspace"),r.getString("prompt"),r.getLong("revision"),
-            r.getString("subject_kind"),r.getString("subject_key"),r.getLong("identity_revision"),r.getString("destination"),r.getLong("destination_revision"),r.getString("response")),key);
+        return db.queryOne("SELECT * FROM l2_session_creations WHERE request_key=?", r -> {
+            long generation = r.getLong("entry_generation");
+            Long entryGeneration = r.wasNull() ? null : generation;
+            return new Row(key,r.getString("caller"),r.getString("effective_owner"),r.getString("group_grant_ref"),r.getString("request_id"),
+                r.getString("digest"),r.getString("scope_ref"),r.getString("workspace"),r.getString("prompt"),r.getLong("revision"),entryGeneration,
+                r.getString("subject_kind"),r.getString("subject_key"),r.getLong("identity_revision"),r.getString("destination"),r.getLong("destination_revision"),r.getString("response"));
+        },key);
     }
     private void identity(EntryConfig entry,Row row) {
         var current=directory.identity(entry.entryRef(),entry.accountBindingEpoch(),row.subjectKind(),row.subjectKey());
@@ -47,6 +52,7 @@ final class SessionCreationService {
     ChannelResponse submit(EntryConfig entry,DirectoryRepository.AdmissionRow admission,IngressRequest request,String scope,String replyTarget,
                            ChannelOperation.SessionCreate create,Runnable guard,GroupWorkspaceGrantService.Grant groupGrant) {
         String key=key(entry,admission.callerRef(),request.requestId()),digest=Digests.sha256(Json.write(PacketJson.enc(request)));
+        var entryGeneration = row(key) == null ? grants.creationPermission(entry.entryRef(), create.sessionWorkspaceRef(), null) : null;
         boolean send=db.tx(c->{
             guard.run();var prior=row(key);
             if(prior!=null) {
@@ -65,11 +71,11 @@ final class SessionCreationService {
             return db.update("""
                 INSERT OR IGNORE INTO l2_session_creations(request_key,entry_ref,epoch,caller,request_id,digest,
                   scope_ref,workspace,prompt,revision,subject_kind,subject_key,identity_revision,destination,
-                  destination_revision,response,effective_owner,group_grant_ref)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)
+                  destination_revision,response,effective_owner,group_grant_ref,entry_generation)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?)
                 """,key,entry.entryRef(),entry.accountBindingEpoch(),admission.callerRef(),request.requestId(),digest,
                 scope,create.sessionWorkspaceRef(),create.userPrompt(),create.expectedBindingRevision(),admission.identitySubjectKind(),admission.identitySubjectKey(),admission.identityBindingRevision(),replyTarget,destination.destinationRevision(),
-                groupGrant==null?admission.callerRef():groupGrant.ownerRef(),groupGrant==null?null:groupGrant.grantRef())==1;
+                groupGrant==null?admission.callerRef():groupGrant.ownerRef(),groupGrant==null?null:groupGrant.grantRef(),entryGeneration)==1;
         });
         return run(entry,row(key),!send);
     }
@@ -85,27 +91,30 @@ final class SessionCreationService {
         if(row.response()!=null) {
             var result=PacketJson.decChannelResponse(row.response());
             if(result instanceof ChannelResponse.Completed complete && complete.result() instanceof OperationResult.SessionCreate created
-                && (!grants.canAct(entry.tenantRef(),entry.workspaceRef(),effectiveOwner,created.session().targetRef(),"target.read")
+                && (!grants.canAct(entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),effectiveOwner,created.session().targetRef(),"target.read")
                     || groupGrant!=null && !groups.current(groupGrant)))
                 return new ChannelResponse.Rejected(row.request(),ChannelErrorCode.PERMISSION_DENIED.error("Created session authorization was revoked"));
             return result;
         }
         try {
+            grants.withEntryPermissions(entry.entryRef(), true,
+                () -> grants.creationPermission(entry.entryRef(), row.workspace(), row.entryGeneration()));
             var created=dispatcher.createSession(entry,effectiveOwner,row.key(),row.workspace(),row.prompt(),lookupOnly);
-            return db.tx(c->{
+            var item = created.session();
+            var owner = created.ownership();
+            if(item.workspace()==null || !row.workspace().equals(item.workspace().sessionWorkspaceRef()) || owner==null
+                    || !item.targetRef().equals(owner.targetRef()) || !effectiveOwner.equals(owner.ownerPrincipalRef()))
+                throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Created session owner is unverified");
+            grants.registerCreatedTarget(entry.entryRef(), item.targetRef(), row.workspace(), row.entryGeneration());
+            return grants.withEntryPermissions(entry.entryRef(), true, () -> db.tx(c->{
                 identity(entry,row);
                 if(groupGrant!=null && !groups.current(groupGrant))throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Group workspace grant changed during creation");
                 var prior=row(row.key());if(prior.response()!=null)return PacketJson.decChannelResponse(prior.response());
-                var item=created.session();var owner=created.ownership();
-                if(item.workspace()==null || !row.workspace().equals(item.workspace().sessionWorkspaceRef()) || owner==null || !item.targetRef().equals(owner.targetRef()) || !effectiveOwner.equals(owner.ownerPrincipalRef()))
-                    throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Created session owner is unverified");
                 directory.upsertTarget(new DirectoryRepository.TargetRow(item.targetRef(),entry.tenantRef(),entry.workspaceRef(),item.agentRef(),item.label(),List.of("text"),TargetSummary.Availability.ONLINE,null,1));
                 directory.applyOwnership(item.targetRef(),entry.tenantRef(),entry.workspaceRef(),owner.ownerPrincipalRef(),owner.resourceEpoch(),owner.revision(),owner.validUntil());
-                var policy=new PersonalSessionPolicy(db);var state=policy.state(entry.tenantRef(),entry.workspaceRef(),effectiveOwner);
-                if(state!=null && !state.targets().contains(item.targetRef())) {
-                    var targets=new ArrayList<>(state.targets());targets.add(item.targetRef());Collections.sort(targets);
-                    policy.replace(entry.tenantRef(),entry.workspaceRef(),effectiveOwner,state,List.copyOf(targets));
-                }
+                var policy=new PersonalSessionPolicy(db);
+                if(row.entryGeneration()!=null || policy.state(entry.tenantRef(),entry.workspaceRef(),effectiveOwner)!=null)
+                    policy.addCreated(entry.tenantRef(),entry.workspaceRef(),effectiveOwner,item.targetRef());
                 db.update("INSERT INTO l2_navigation_catalog VALUES(?,?,?) ON CONFLICT(target_ref) DO UPDATE SET workspace_ref=excluded.workspace_ref,summary_json=excluded.summary_json",item.targetRef(),row.workspace(),Json.write(PacketJson.enc(item)));
                 if(groupGrant!=null)groups.recordOrigin(item.targetRef(),groupGrant,row.subjectKey());
                 // Selecting is a separate CAS: a late creation cannot undo another tab's choice.
@@ -116,7 +125,7 @@ final class SessionCreationService {
                 var packet=new CommandPacket("1","cmd-"+row.key(),CommandType.SESSION_CREATE,clock.instant(),Correlation.of("flow-"+row.key()),
                     new PacketContext(entry.tenantRef(),entry.workspaceRef(),item.targetRef(),row.key(),null),new Producer(Layer.L2,"session-creation"),Actor.of(effectiveOwner),
                     new CommandPayload.SessionCreate(row.workspace(),row.prompt(),row.revision()));
-                grants.capture(packet);
+                grants.capture(packet, entry.entryRef());
                 if(groupGrant!=null)groups.recordOperation(row.key(),groupGrant,item.targetRef(),row.subjectKey(),"SESSION_CREATE");
                 String dedupe=SubmitService.requestKey(entry,row.caller(),row.request());
                 requests.saveInbox(new RequestRepository.InboxRow(dedupe,entry.tenantRef(),entry.workspaceRef(),entry.entryRef(),entry.accountBindingEpoch(),row.caller(),row.request(),row.digest(),
@@ -126,7 +135,7 @@ final class SessionCreationService {
                     row.destination(),row.destinationRevision(),row.caller(),row.scope(),groupGrant!=null,"SESSION_CREATE","ACTIVE"));
                 db.update("UPDATE l2_session_creations SET response=? WHERE request_key=?",Json.write(PacketJson.enc(response)),row.key());
                 return response;
-            });
+            }));
         } catch(RuntimeException error) {
             Throwable actual=error;while(actual.getCause()!=null && (actual instanceof CompletionException || actual instanceof ExecutionException || actual instanceof RuntimeException && !(actual instanceof ChannelContractException)))actual=actual.getCause();
             if(actual instanceof SessionCreation.NotStarted failure) {

@@ -29,7 +29,7 @@ final class DurableInboxService {
         inbox.expire(clock.instant().toString());nextSweep=clock.instant().plusSeconds(60);
     }
     DeliveryInbox.Receipt append(EntryConfig entry,String id,Runnable guard) {
-        return db.tx(c->{
+        return grants.withEntryPermissions(entry.entryRef(), false, () -> db.tx(c->{
             guard.run();requirePersistent();
             var row=deliveries.delivery(id);
             if(row==null || !entry.entryRef().equals(row.entryRef()) || !entry.tenantRef().equals(row.tenantRef()) || !entry.workspaceRef().equals(row.workspaceRef()))
@@ -48,7 +48,7 @@ final class DurableInboxService {
             if(inbox.count(mailbox)>=setting(entry,"maxItems",100000,1,1000000)) fail(ChannelErrorCode.UNAVAILABLE,"Inbox capacity reached");
             inbox.append(mailbox,id,Ids.next("ireceipt"),row.deliveryJson(),clock.instant().toString(),clock.instant().plusSeconds(setting(entry,"retentionSeconds",2592000,60,31536000)).toString());
             return receipt(inbox.find(id));
-        });
+        }));
     }
     DeliveryReceipt custody(String id) {
         var item=inbox.find(id);
@@ -65,7 +65,7 @@ final class DurableInboxService {
         });
     }
     DeliveryInbox.Result read(EntryConfig entry,DirectoryRepository.AdmissionRow a,DeliveryInbox.Request request,Runnable guard) {
-        return db.tx(c->{
+        return grants.withEntryPermissions(entry.entryRef(), false, () -> db.tx(c->{
             guard.run();var d=destination(entry,a.replyTargetRef(),null);
             requireRecipient(d,a);String mail=mailbox(entry,d);
             var consumer=inbox.consumer(mail,request.consumerKey(),Ids.next("iconsumer"));
@@ -94,10 +94,10 @@ final class DurableInboxService {
             String next=cursor!=null && !cursor.resync() && position==end && Instant.parse(cursor.expiry()).isAfter(clock.instant().plusSeconds(600))
                 ?request.cursor():cursor(entry,consumer,position,end,false);
             return DeliveryInbox.Result.page(new DeliveryInbox.Page(consumer.ref(),items,next,rows.size()>request.pageSize()));
-        });
+        }));
     }
     void acknowledge(EntryConfig entry,DirectoryRepository.AdmissionRow a,DeliveryInbox.Acknowledgement ack,Runnable guard) {
-        db.tx(c->{
+        grants.withEntryPermissions(entry.entryRef(), false, () -> db.tx(c->{
             guard.run();var d=destination(entry,a.replyTargetRef(),null);requireRecipient(d,a);
             var consumer=inbox.consumer(ack.consumerRef());
             if(consumer==null || !consumer.mailbox().equals(mailbox(entry,d)))fail(ChannelErrorCode.PERMISSION_DENIED,"Consumer belongs to another identity");
@@ -119,7 +119,7 @@ final class DurableInboxService {
                 }
             }
             return null;
-        });
+        }));
     }
     private DeliveryInbox.Result gap(EntryConfig e,InboxRepository.Consumer c,String reason) {
         long baseline=Math.max(c.received(),inbox.expiredThrough(c.mailbox(),clock.instant().toString()));

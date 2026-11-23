@@ -38,7 +38,15 @@ Maven Enforcer 和边界测试约束模块依赖。L2/L3 通过公共端口协�
 
 ```powershell
 mvn clean package
+$channelBuild = Join-Path $PWD.Path 'channel-app/target'
 Copy-Item application-example.yml application-local.yml
+```
+
+Windows 上，运行中的 JVM 会占用它启动时使用的 JAR。若旧服务已占用默认产物路径，从独立目录构建新包。
+
+```powershell
+$channelBuild = Join-Path $PWD.Path 'channel-app/target/boot-next'
+mvn package "-Dchannel.executable.outputDirectory=$channelBuild"
 ```
 
 生成不同用途的随机密钥（以下命令在 PowerShell 执行）：
@@ -55,8 +63,15 @@ $env:CHANNEL_L3_SINK_TOKEN = New-ChannelSecret
 
 修改 `application-local.yml` 中的 W3 UID、proof 文件绝对路径、真实会话 ID 和 Web 页面令牌。示例入口默认停用，联调时显式启用 `web-local`。密钥需要跨重启保持一致；`CHANNEL_MASTER_KEY` 是本服务 AES-256-GCM 主密钥，不能每次重启重新生成。
 
+从独立运行目录启动 JAR 副本，避免运行中的服务占用 Maven 下次构建的产物。
+
 ```powershell
-java -jar channel-app/target/channel-app-2.0.0-SNAPSHOT.jar `
+$channelJarName = 'channel-app-2.0.0-SNAPSHOT.jar'
+$channelRun = Join-Path ([IO.Path]::GetTempPath()) ('netlivecowork-channel-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $channelRun | Out-Null
+$channelJar = Join-Path $channelRun $channelJarName
+Copy-Item -LiteralPath (Join-Path $channelBuild $channelJarName) -Destination $channelJar
+java -jar $channelJar `
   --spring.config.additional-location=file:./application-local.yml
 Invoke-RestMethod http://127.0.0.1:17927/health
 $headers = @{ Authorization = "Bearer $env:CHANNEL_ADMIN_TOKEN" }

@@ -190,11 +190,14 @@ final class WebController {
         var web=adapter(entryRef);
         if(web==null)return ResponseEntity.status(503).body(Json.obj().put("status","rejected"));
         try {
-            Json.onlyFields(body,"targetRef","cursor","limit");
+            Json.onlyFields(body,"targetRef","cursor","limit","selected");
+            boolean selected = body.path("selected").isBoolean() && body.path("selected").booleanValue();
+            if (body.has("selected") && (!selected || body.has("targetRef")))
+                throw new IllegalArgumentException("Specify one history target");
             if(body.has("limit") && (!body.path("limit").isIntegralNumber() || !body.path("limit").canConvertToInt()))
                 throw new IllegalArgumentException("invalid limit");
             Integer limit=body.has("limit")?body.path("limit").intValue():null;
-            var page=web.queryHistory(pageToken(authorization,null),Json.text(body,"targetRef"),Json.optText(body,"cursor"),limit);
+            var page=web.queryHistory(pageToken(authorization,null),selected?null:Json.text(body,"targetRef"),Json.optText(body,"cursor"),limit);
             var result=Json.obj().put("targetRef",page.targetRef());
             var items=Json.arr();
             for(var item:page.items())items.add(Json.obj().put("messageRef",item.messageRef()).put("role",item.role())
@@ -253,17 +256,7 @@ final class WebController {
             var response=Json.obj().put("status",result.status());
             if(result.page()!=null) {
                 var page=result.page();var messages=Json.arr();
-                for(var item:page.items()) {
-                    var d=item.delivery();var p=d.packet();
-                    var message=Json.obj().put("sequence",item.sequence()).put("deliveryId",d.deliveryId())
-                        .put("type",p.type().wire()).put("sourceLabel",d.presentation().sourceLabel())
-                        .put("text",com.netlivecowork.channel.l1.render.PlainTextRenderer.body(p)).put("targetRef",p.context().targetRef());
-                    message.set("presentation",Json.mapper().valueToTree(d.presentation()));
-                    if(item.readAt()!=null)message.put("readAt",item.readAt());
-                    if(p.payload() instanceof com.netlivecowork.channel.contract.EventPayload.MessageReady ready)message.put("messageRef",ready.message().messageRef());
-                    if(p.type().wire().startsWith("interaction.") || p.type()==com.netlivecowork.channel.contract.EventType.TASK_COMPLETED)message.set("packet",PacketJson.enc(p));
-                    messages.add(message);
-                }
+                for (var item : page.items()) messages.add(web.renderInboxItem(item));
                 response.put("consumerRef",page.consumerRef()).put("nextCursor",page.nextCursor()).put("hasMore",page.hasMore());response.set("messages",messages);
             } else response.put("reason",result.reason()).put("resyncCursor",result.resyncCursor());
             return ResponseEntity.ok(response);

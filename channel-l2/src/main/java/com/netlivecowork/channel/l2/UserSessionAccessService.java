@@ -19,6 +19,10 @@ final class UserSessionAccessService {
     }
     private record Verified(TrustedCall call,SessionAccess.Catalog catalog,Set<String> existingTargets) {}
     private Verified verify(TrustedCall call,Runnable guard) {
+        return verify(call, guard, true);
+    }
+
+    private Verified verify(TrustedCall call,Runnable guard,boolean legacySelection) {
         guard.run();
         Set<String> before=new HashSet<>(directory.targets(call.tenantRef(),call.workspaceRef()).stream().map(DirectoryRepository.TargetRow::targetRef).toList());
         SessionAccess.Catalog catalog;
@@ -43,8 +47,9 @@ final class UserSessionAccessService {
                     throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"Existing resource ownership cannot be verified");
                 directory.applyOwnership(o.targetRef(),call.tenantRef(),call.workspaceRef(),o.ownerPrincipalRef(),o.resourceEpoch(),o.revision(),o.validUntil());
             }
-            policy.seed(call.tenantRef(),call.workspaceRef(),call.principalRef(),before.stream()
-                .filter(ref->grants.canConfigureTarget(call.tenantRef(),call.workspaceRef(),call.principalRef(),ref)).sorted().toList());
+            if (legacySelection)
+                policy.seed(call.tenantRef(),call.workspaceRef(),call.principalRef(),before.stream()
+                    .filter(ref->grants.canConfigureTarget(call.tenantRef(),call.workspaceRef(),call.principalRef(),ref)).sorted().toList());
             return null;
         });
         try { backend.registerCatalogTargets(call,catalog.authenticationRef()).toCompletableFuture().get(10,TimeUnit.SECONDS); }
@@ -71,27 +76,45 @@ final class UserSessionAccessService {
         var verified=verify(call,guard);
         return db.tx(c->{guard.run();return view(verified);});
     }
+    SessionAccess.View available(TrustedCall call, Runnable guard) {
+        var verified = verify(call, guard, false);
+        return db.tx(c -> { guard.run(); return view(verified); });
+    }
     private SessionAccess.View view(Verified v) {
-        var call=v.call();var state=policy.state(call.tenantRef(),call.workspaceRef(),call.principalRef());
+        var call=v.call();
+        return view(v, policy.state(call.tenantRef(),call.workspaceRef(),call.principalRef()));
+    }
+    private SessionAccess.View view(Verified v, PersonalSessionPolicy.State state) {
+        var call = v.call();
         Map<String,SessionAccess.Candidate> owned=new HashMap<>();v.catalog().candidates().forEach(c->owned.put(c.summary().targetRef(),c));
         List<SessionAccess.Item> items=new ArrayList<>();
         for(var row:directory.targets(call.tenantRef(),call.workspaceRef())) {
             if(!grants.canConfigureTarget(call.tenantRef(),call.workspaceRef(),call.principalRef(),row.targetRef())) continue;
             var candidate=owned.get(row.targetRef());
             items.add(new SessionAccess.Item(row.targetRef(),row.label(),candidate==null?"已获准的会话":candidate.workspaceLabel(),
-                candidate==null?row.availability().name().toLowerCase():candidate.status(),state.targets().contains(row.targetRef())));
+                candidate==null?row.availability().name().toLowerCase():candidate.status(),state!=null && state.targets().contains(row.targetRef())));
         }
-        return new SessionAccess.View(state.revision(),call.principalRef(),items);
+        return new SessionAccess.View(state==null ? 0 : state.revision(),call.principalRef(),items);
     }
     SessionAccess.Saved save(TrustedCall call,SessionAccess.Save request,Runnable guard) {
+        return save(call,request,guard,null);
+    }
+    SessionAccess.Saved save(TrustedCall call,SessionAccess.Save request,Runnable guard,Set<String> eligibleWorkspaces) {
         if(request==null || request.requestId()==null || request.requestId().isBlank() || request.requestId().length()>256
             || request.expectedRevision()<0 || request.targetRefs().size()>200 || request.targetRefs().stream().anyMatch(r->r==null||r.isBlank())
             || new HashSet<>(request.targetRefs()).size()!=request.targetRefs().size())
             throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"requestId, current revision and unique session selections are required");
+        if(request.workspaceRefs()!=null && (eligibleWorkspaces==null || request.workspaceRefs().size()>200
+                || request.workspaceRefs().size()!=new HashSet<>(request.workspaceRefs()).size()))
+            throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT,"Unique workspace references are required");
         var verified=verify(call,guard);
         List<String> selected=request.targetRefs().stream().sorted().toList();
         String key=key(call,request.requestId());
-        String digest=Digests.sha256(Json.write(Json.obj().put("revision",request.expectedRevision()).set("targets",Json.mapper().valueToTree(selected))));
+        var parameters=Json.obj().put("revision",request.expectedRevision());
+        parameters.set("targets",Json.mapper().valueToTree(selected));
+        var creation=request.workspaceRefs()==null?null:request.workspaceRefs().stream().sorted().toList();
+        if(creation!=null)parameters.set("workspaces",Json.mapper().valueToTree(creation));
+        String digest=Digests.sha256(Json.write(parameters));
         return db.tx(c->{
             guard.run();
             var prior=db.queryOne("SELECT request_digest,snapshot FROM l2_personal_session_requests WHERE request_key=?",r->List.of(r.getString(1),r.getString(2)),key);
@@ -101,15 +124,26 @@ final class UserSessionAccessService {
             }
             Set<String> eligible=new HashSet<>(view(verified).items().stream().map(SessionAccess.Item::targetRef).toList());
             if(!eligible.containsAll(selected)) throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"A selected session is not currently authorized for this actual user");
+            if(creation!=null && !eligibleWorkspaces.containsAll(creation))
+                throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,"A selected workspace does not allow session creation");
             var before=policy.state(call.tenantRef(),call.workspaceRef(),call.principalRef());
             if(before.revision()!=request.expectedRevision()) throw new ChannelContractException(ChannelErrorCode.GRANT_REVISION_CONFLICT,"Access configuration changed; reload and review the current selection");
-            if(!before.targets().equals(selected)) policy.replace(call.tenantRef(),call.workspaceRef(),call.principalRef(),before,selected);
+            boolean creationChanged=creation!=null && !creation.equals(creationRefs(call));
+            if(!before.targets().equals(selected)||creationChanged)policy.replace(call.tenantRef(),call.workspaceRef(),call.principalRef(),before,selected);
+            if(creationChanged)policy.saveCreationRefs(call.tenantRef(),call.workspaceRef(),call.principalRef(),creation);
             var current=policy.state(call.tenantRef(),call.workspaceRef(),call.principalRef());
             var snapshot=Json.obj().put("requestId",request.requestId()).put("revision",current.revision());
             snapshot.set("targetRefs",Json.mapper().valueToTree(current.targets()));
             db.update("INSERT INTO l2_personal_session_requests VALUES(?,?,?)",key,digest,Json.write(snapshot));
             return new SessionAccess.Saved(request.requestId(),current.revision(),current.targets());
         });
+    }
+    List<String> creationRefs(TrustedCall call) {
+        return policy.creationRefs(call.tenantRef(),call.workspaceRef(),call.principalRef());
+    }
+    long accessGeneration(TrustedCall call,String ref,boolean workspace) {
+        return workspace ? policy.creationGeneration(call.tenantRef(),call.workspaceRef(),call.principalRef(),ref)
+            : policy.generation(call.tenantRef(),call.workspaceRef(),call.principalRef(),ref);
     }
     SessionAccess.Saved lookup(TrustedCall call,String requestId,Runnable guard) {
         verify(call,guard);

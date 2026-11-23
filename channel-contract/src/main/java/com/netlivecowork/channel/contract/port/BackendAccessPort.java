@@ -19,6 +19,27 @@ import java.util.concurrent.CompletionStage;
  * 不新增通用包装；L3 不修改已受理的 CommandPacket。
  */
 public interface BackendAccessPort {
+    /** Recheck the current Cowork disclosure basis for one observed event. */
+    default com.fasterxml.jackson.databind.JsonNode subscriptionEvent(String serviceRef, String ref, long revision,
+                                                                     String eventId) {
+        throw new com.netlivecowork.channel.contract.ChannelContractException(
+            com.netlivecowork.channel.contract.ChannelErrorCode.UNSUPPORTED_CAPABILITY,
+            "This backend does not support Cowork subscriptions");
+    }
+
+    /** Resolve an entry permission by reference at its CoWork host. */
+    default com.fasterxml.jackson.databind.JsonNode entryPermission(
+            String serviceRef, String permissionRef, String action, com.fasterxml.jackson.databind.JsonNode body) {
+        throw new com.netlivecowork.channel.contract.ChannelContractException(
+            com.netlivecowork.channel.contract.ChannelErrorCode.UNSUPPORTED_CAPABILITY,
+            "This backend does not resolve Channel entry permissions");
+    }
+
+    default CompletionStage<List<com.netlivecowork.channel.contract.SessionWorkspace>> creationWorkspaces(
+            TrustedCall call, String serviceRef) {
+        return creationWorkspaces(call);
+    }
+
     default CompletionStage<List<com.netlivecowork.channel.contract.SessionWorkspace>> creationWorkspaces(TrustedCall call) {
         return java.util.concurrent.CompletableFuture.completedFuture(List.of());
     }

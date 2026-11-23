@@ -397,11 +397,10 @@ public final class QqAdapterInstance implements AdapterInstance, ConnectionPort,
                 ChannelErrorCode.UNAVAILABLE.error("QQ gateway is offline"));
             if (!entryRef().equals(delivery.routing().entryRef())) return new DeliveryReceipt.Failed(id,
                 ChannelErrorCode.INVALID_ARGUMENT.error("QQ delivery belongs to another entry"));
-            String body;
-            try { body = PlainTextRenderer.body(delivery); }
+            String text;
+            try { text = PlainTextRenderer.deliveryText(delivery); }
             catch (PlainTextRenderer.UnsupportedContent e) { return new DeliveryReceipt.Failed(id,
                 ChannelErrorCode.UNSUPPORTED_CONTENT.error(e.getMessage())); }
-            String text = PlainTextRenderer.withSourceLabel(delivery.presentation().sourceLabel(), body);
             int sent=0;
             try {
                 ResolvedDestination dest = host.destinations().resolve(delivery.routing().destinationRef(),

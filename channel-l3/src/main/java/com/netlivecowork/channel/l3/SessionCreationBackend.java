@@ -28,8 +28,12 @@ final class SessionCreationBackend {
         return Map.of("X-Channel-Delegation",identity.protectedProof());
     }
     private List<Workspace> catalog(TrustedCall call) throws IOException,InterruptedException {
+        return catalog(call, null);
+    }
+    private List<Workspace> catalog(TrustedCall call, String serviceRef) throws IOException,InterruptedException {
         var result=new ArrayList<Workspace>();
         for(var service:registry.services(call.tenantRef(),call.workspaceRef())) {
+            if (serviceRef != null && !serviceRef.equals(service.serviceRef())) continue;
             if(!service.enabled() || identities.catalogIdentity(call,service.serviceRef())==null)continue;
             if(!protocol.capabilities(service).path("features").path("session_create").asBoolean(false))continue;
             var body=BackendProtocol.successful(client.exchange(service,"GET",BackendProtocol.PREFIX+"/creation-workspaces",null,headers(service,call)));
@@ -47,6 +51,9 @@ final class SessionCreationBackend {
     }
     List<SessionWorkspace> workspaces(TrustedCall call) throws IOException,InterruptedException {
         return catalog(call).stream().map(Workspace::summary).toList();
+    }
+    List<SessionWorkspace> workspaces(TrustedCall call, String service) throws IOException,InterruptedException {
+        return catalog(call, service).stream().map(Workspace::summary).toList();
     }
     SessionCreation.Created create(TrustedCall call,String request,String workspace,String prompt,boolean lookupOnly) throws IOException,InterruptedException {
         String key="create-"+Digests.sha256(String.join("\u0000",call.tenantRef(),call.workspaceRef(),call.principalRef(),request));

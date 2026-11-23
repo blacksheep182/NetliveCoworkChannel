@@ -36,6 +36,15 @@ public enum EventType {
             && this != INTERACTION_EXPIRED && this != INTERACTION_CANCELLED;
     }
 
+    public TaskStatus terminalTaskStatus() {
+        return switch (this) {
+            case TASK_COMPLETED -> TaskStatus.COMPLETED;
+            case TASK_FAILED -> TaskStatus.FAILED;
+            case TASK_CANCELLED -> TaskStatus.CANCELLED;
+            default -> null;
+        };
+    }
+
     public static EventType parse(String wire) {
         if (wire == null) {
             throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, "event.type is required");

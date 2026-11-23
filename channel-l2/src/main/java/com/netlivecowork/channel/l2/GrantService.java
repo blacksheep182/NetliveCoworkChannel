@@ -39,11 +39,13 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
     private final Db db;
     private final Clock clock;
     private final PersonalSessionPolicy personalSessions;
+    private final EntryPermissionService hostPermissions;
 
-    public GrantService(Db db, Clock clock) {
+    public GrantService(Db db, Clock clock, com.netlivecowork.channel.contract.port.BackendAccessPort backend) {
         this.db = db;
         this.clock = clock;
         this.personalSessions = new PersonalSessionPolicy(db);
+        this.hostPermissions = new EntryPermissionService(db, backend);
     }
 
     @Override
@@ -272,7 +274,12 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
      */
     public boolean canAct(String tenantRef, String workspaceRef, String principalRef, String targetRef,
                           String action) {
-        try { return authorize(tenantRef, workspaceRef, principalRef, targetRef, null,
+        return canAct(tenantRef, workspaceRef, null, principalRef, targetRef, action);
+    }
+
+    boolean canAct(String tenantRef, String workspaceRef, String entryRef, String principalRef,
+                   String targetRef, String action) {
+        try { return authorize(tenantRef, workspaceRef, entryRef, principalRef, targetRef, null,
                 List.of(permission(action))) != null; }
         catch (RuntimeException e) { return false; }
     }
@@ -578,10 +585,56 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
         return authorizeResource(tenant,workspace,principal,target,null,List.of(new GrantManagement.TargetRead()))!=null;
     }
 
-    private ObjectNode authorize(String tenant, String workspace, String principal, String target,
+    private ObjectNode authorize(String tenant, String workspace, String entry, String principal, String target,
                                  String task, List<GrantPermission> required) {
-        if(principal==null || !personalSessions.allows(tenant,workspace,principal,target)) return null;
-        return authorizeResource(tenant,workspace,principal,target,task,required);
+        boolean managed = hostPermissions.managed(entry);
+        if (managed && db.queryOne("SELECT target_ref FROM l2_group_session_origins WHERE target_ref=?",
+                rs->rs.getString(1),target)!=null) return null;
+        if (principal == null || (managed
+                ? !personalSessions.explicitlyAllows(tenant, workspace, principal, target)
+                : !personalSessions.allows(tenant, workspace, principal, target))) return null;
+        var basis = authorizeResource(tenant, workspace, principal, target, task, required);
+        if (basis != null && managed) {
+            var evidence = hostPermissions.check(entry, target, null, null, null);
+            if (personalSessions.generation(tenant, workspace, principal, target) != evidence.path("channelGeneration").asLong(0))
+                return null;
+            basis.put("entryRef", entry).put("entryPermissionRef", evidence.path("permissionRef").asText())
+                .put("entryPermissionGeneration", evidence.path("generation").asLong())
+                .put("entryTargetGeneration", evidence.path("targetGeneration").asLong());
+        }
+        return basis;
+    }
+
+    Long creationPermission(String entry, String workspace, Long generation) {
+        if (!hostPermissions.managed(entry)) return null;
+        var allowed = db.queryOne("""
+            SELECT e.tenant_ref,e.workspace_ref,i.caller_ref FROM l2_entries e
+            JOIN l2_identity_bindings i ON i.entry_ref=e.entry_ref AND i.account_binding_epoch=e.account_binding_epoch
+              AND i.external_subject_kind='USER' AND i.external_subject_key='host-web'
+            WHERE e.entry_ref=?
+            """,r->List.of(r.getString(1),r.getString(2),r.getString(3)),entry);
+        if (allowed==null || !personalSessions.creationRefs(allowed.get(0),allowed.get(1),allowed.get(2)).contains(workspace))
+            throw new com.netlivecowork.channel.contract.ChannelContractException(
+                com.netlivecowork.channel.contract.ChannelErrorCode.PERMISSION_DENIED,"Channel has no permission to create in this workspace");
+        var evidence=hostPermissions.check(entry, null, workspace, generation, null);
+        if (personalSessions.creationGeneration(allowed.get(0),allowed.get(1),allowed.get(2),workspace)
+                != evidence.path("channelGeneration").asLong(0))
+            throw new com.netlivecowork.channel.contract.ChannelContractException(
+                com.netlivecowork.channel.contract.ChannelErrorCode.PERMISSION_DENIED,"Re-enable creation for this Channel entry");
+        return evidence.path("generation").asLong();
+    }
+
+    boolean canCreateInWorkspace(String entry, String workspace) {
+        try {
+            creationPermission(entry, workspace, null);
+            return true;
+        } catch (com.netlivecowork.channel.contract.ChannelContractException denied) {
+            return false;
+        }
+    }
+
+    void registerCreatedTarget(String entry, String target, String workspace, Long generation) {
+        if (generation != null) hostPermissions.created(entry, target, workspace, generation);
     }
 
     private ObjectNode authorizeResource(String tenant,String workspace,String principal,String target,
@@ -608,9 +661,13 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
 
     void requireAction(String tenant, String workspace, String principal, String target, String task,
                        List<GrantPermission> required) {
-        if (authorize(tenant, workspace, principal, target, task, required) == null)
+        if (authorize(tenant, workspace, null, principal, target, task, required) == null)
             throw new com.netlivecowork.channel.contract.ChannelContractException(ChannelErrorCode.PERMISSION_DENIED,
                 "resource action is not authorized");
+    }
+
+    <T> T withEntryPermissions(String entryRef, boolean refresh, java.util.function.Supplier<T> work) {
+        return hostPermissions.scoped(entryRef, refresh, work);
     }
 
     private List<GrantPermission> required(com.netlivecowork.channel.contract.CommandPacket p) {
@@ -629,7 +686,11 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
     }
 
     void capture(com.netlivecowork.channel.contract.CommandPacket p) {
-        ObjectNode b = authorize(p.context().tenantRef(), p.context().workspaceRef(), p.actor().principalRef(),
+        capture(p, null);
+    }
+
+    void capture(com.netlivecowork.channel.contract.CommandPacket p, String entryRef) {
+        ObjectNode b = authorize(p.context().tenantRef(), p.context().workspaceRef(), entryRef, p.actor().principalRef(),
             p.context().targetRef(), p.context().taskRef(), required(p));
         if (b == null) throw new com.netlivecowork.channel.contract.ChannelContractException(
             ChannelErrorCode.PERMISSION_DENIED, "resource action is not authorized");
@@ -637,7 +698,7 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
     }
 
     void captureHistory(String operationRef, com.netlivecowork.channel.contract.TrustedCall call, String target) {
-        var basis = authorize(call.tenantRef(), call.workspaceRef(), call.principalRef(), target, null,
+        var basis = authorize(call.tenantRef(), call.workspaceRef(), call.entryRef(), call.principalRef(), target, null,
             List.of(new GrantManagement.TargetRead(), new GrantManagement.HistoryRead()));
         if (basis == null) throw new com.netlivecowork.channel.contract.ChannelContractException(
             ChannelErrorCode.PERMISSION_DENIED, "history.read is not authorized for this session");
@@ -651,8 +712,23 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
         String target = b.path("target").asText();
         Authority a = authority(target);
         String tenant=b.path("tenant").asText(),workspace=b.path("workspace").asText(),principal=b.path("principal").asText();
-        if(!personalSessions.allows(tenant,workspace,principal,target)
-            || personalSessions.generation(tenant,workspace,principal,target)!=b.path("personalSelectionGeneration").asLong(0)) return false;
+        if (b.has("entryPermissionRef")) {
+            if (!personalSessions.explicitlyAllows(tenant,workspace,principal,target)
+                || personalSessions.generation(tenant,workspace,principal,target)
+                    != b.path("personalSelectionGeneration").asLong(0)) return false;
+            try {
+                String permissionRef = b.path("entryPermissionRef").asText();
+                String entryRef = b.path("entryRef").asText(permissionRef);
+                var evidence = hostPermissions.check(entryRef, target, null,
+                    b.path("entryPermissionGeneration").asLong(), b.path("entryTargetGeneration").asLong());
+                if (!permissionRef.equals(evidence.path("permissionRef").asText())) return false;
+                if (personalSessions.generation(tenant,workspace,principal,target)!=evidence.path("channelGeneration").asLong(0)) return false;
+            } catch (com.netlivecowork.channel.contract.ChannelContractException denied) {
+                return false;
+            }
+        } else if (!personalSessions.allows(tenant, workspace, principal, target)
+                || personalSessions.generation(tenant, workspace, principal, target)
+                    != b.path("personalSelectionGeneration").asLong(0)) return false;
         if (!target(b.path("tenant").asText(), b.path("workspace").asText(), target, null)
             || a.epoch() != b.path("epoch").asLong() || a.generation() != b.path("generation").asLong()) return false;
         if (b.has("owner")) return a.owner().equals(b.path("owner").asText());
@@ -670,12 +746,20 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
 
     /** Authorization and durable attempt claim compete with revocation in one short transaction. */
     boolean begin(String operationRef, java.util.function.BooleanSupplier claim) {
-        return db.tx(c -> {
+        String stored = db.queryOne("SELECT basis_json FROM l2_authorization_basis WHERE operation_ref=?",
+            rs -> rs.getString(1), operationRef);
+        JsonNode basis = stored == null ? Json.obj() : Json.read(stored);
+        String entryRef = basis.path("entryRef").asText(basis.path("entryPermissionRef").asText(null));
+        try {
+            return withEntryPermissions(entryRef, true, () -> db.tx(c -> {
             if (!current(operationRef) || !claim.getAsBoolean()) return false;
             db.update("INSERT INTO l2_authorization_attempts(operation_ref,started_at) VALUES(?,?)",
                 operationRef, clock.instant().toString());
             return true;
-        });
+            }));
+        } catch (com.netlivecowork.channel.contract.ChannelContractException denied) {
+            return false;
+        }
     }
 
     private void remember(TrustedManagementContext c, String method, String request, String ref) {
@@ -699,16 +783,48 @@ public final class GrantService implements GrantManagement.GrantManagementPort {
     }
 
 
-    boolean beginDelivery(String delivery, String recipient) {
-        return db.tx(c -> {
-            if (!currentDelivery(delivery, recipient)) return false;
-            db.update("INSERT INTO l2_authorization_attempts(operation_ref,started_at) VALUES(?,?)",
-                "delivery:" + delivery, clock.instant().toString());
-            return true;
-        });
+    private HostSubscriptionDeliveries hostSubscriptions;
+
+    void bindHostSubscriptions(HostSubscriptionDeliveries subscriptions) {
+        this.hostSubscriptions = subscriptions;
+    }
+
+    com.fasterxml.jackson.databind.JsonNode currentHostEntry(String entryRef, String target, Long generation,
+                                                              Long targetGeneration) {
+        return hostPermissions.check(entryRef, target, null, generation, targetGeneration);
+    }
+
+    boolean currentPersonalSession(String tenant, String workspace, String principal, String target, JsonNode entryGrant) {
+        return personalSessions.explicitlyAllows(tenant, workspace, principal, target)
+            && personalSessions.generation(tenant, workspace, principal, target)==entryGrant.path("channelGeneration").asLong(0);
+    }
+
+    boolean beginDelivery(String delivery, String recipient, String entryRef) {
+        try {
+            return withEntryPermissions(entryRef, true, () -> {
+                if (db.tx(c -> recordDeliveryStart(delivery, currentReply(delivery, recipient)))) return true;
+                if (hostSubscriptions == null || !hostSubscriptions.mayBegin(delivery, recipient)) return false;
+                return db.tx(c -> recordDeliveryStart(delivery, hostSubscriptions.mayRead(delivery, recipient)));
+            });
+        } catch (com.netlivecowork.channel.contract.ChannelContractException denied) {
+            if (hostSubscriptions != null && hostSubscriptions.hasBasis(delivery, recipient)
+                    && denied.code() == com.netlivecowork.channel.contract.ChannelErrorCode.UNAVAILABLE) throw denied;
+            return false;
+        }
+    }
+
+    private boolean recordDeliveryStart(String delivery, boolean allowed) {
+        if (allowed) db.update("INSERT INTO l2_authorization_attempts(operation_ref,started_at) VALUES(?,?)",
+            "delivery:" + delivery, clock.instant().toString());
+        return allowed;
     }
 
     boolean currentDelivery(String delivery, String recipient) {
+        return currentReply(delivery, recipient)
+            || (hostSubscriptions != null && hostSubscriptions.mayRead(delivery, recipient));
+    }
+
+    private boolean currentReply(String delivery, String recipient) {
             for (String operation : db.query("""
                 SELECT rr.operation_ref FROM l2_outbox_relations r
                 JOIN l2_reply_relations rr ON rr.relation_id=r.relation_ref

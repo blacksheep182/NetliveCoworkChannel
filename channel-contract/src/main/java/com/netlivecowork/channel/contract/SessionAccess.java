@@ -15,8 +15,14 @@ public final class SessionAccess {
     }
     public record Item(String targetRef, String label, String workspaceLabel, String status, boolean selected) {}
     public record View(long revision, String principalRef, List<Item> items) { public View { items=List.copyOf(items); } }
-    public record Save(String requestId, long expectedRevision, List<String> targetRefs) {
-        public Save { targetRefs=targetRefs==null?List.of():List.copyOf(targetRefs); }
+    public record Save(String requestId, long expectedRevision, List<String> targetRefs, List<String> workspaceRefs) {
+        public Save(String requestId, long expectedRevision, List<String> targetRefs) {
+            this(requestId, expectedRevision, targetRefs, null);
+        }
+        public Save {
+            targetRefs=targetRefs==null?List.of():List.copyOf(targetRefs);
+            if(workspaceRefs!=null)workspaceRefs=List.copyOf(workspaceRefs);
+        }
     }
     public record Saved(String requestId, long revision, List<String> targetRefs) {
         public Saved { targetRefs=List.copyOf(targetRefs); }

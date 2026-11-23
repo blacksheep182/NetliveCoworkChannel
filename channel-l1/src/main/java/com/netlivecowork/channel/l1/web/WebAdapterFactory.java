@@ -29,6 +29,8 @@ public final class WebAdapterFactory implements AdapterFactory {
 
     static final String SETTINGS_USERS = "users";
     static final String SETTINGS_USERS_FILE = "usersFile";
+    static final String RELAY_DIGEST = "hostRelayDigest";
+    static final String RELAY_SUBJECT = "host-web";
 
     @Override
     public AdapterDescriptor describe() {
@@ -57,6 +59,11 @@ public final class WebAdapterFactory implements AdapterFactory {
             issues.add(new ValidationResult.ValidationIssue("settings.historyAccess","INVALID","historyAccess must be none, summary or full"));
         JsonNode users = settings.get(SETTINGS_USERS);
         String usersFile = settings.path(SETTINGS_USERS_FILE).asText("");
+        if (settings.has(RELAY_DIGEST)) {
+            if (users != null || !usersFile.isBlank() || !settings.path(RELAY_DIGEST).asText().matches("[a-f0-9]{64}"))
+                issues.add(new ValidationResult.ValidationIssue("settings.hostRelayDigest", "INVALID", "Invalid host relay identity"));
+            return issues.isEmpty() ? ValidationResult.ok() : ValidationResult.failed(issues);
+        }
         if (users != null && !users.isNull()) {
             if (!users.isObject() || users.isEmpty()) {
                 issues.add(new ValidationResult.ValidationIssue("settings." + SETTINGS_USERS, "INVALID",

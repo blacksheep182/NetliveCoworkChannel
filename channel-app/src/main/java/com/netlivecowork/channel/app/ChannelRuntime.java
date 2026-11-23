@@ -60,6 +60,17 @@ public final class ChannelRuntime implements AutoCloseable {
         catch(java.util.concurrent.TimeoutException e){throw new com.netlivecowork.channel.contract.ChannelContractException(com.netlivecowork.channel.contract.ChannelErrorCode.UNAVAILABLE,"CoWork authentication unavailable");}
     }
 
+    String completionSink(String serviceRef) {
+        String preferred = properties.l3().sinkRef();
+        if (l3.events().serves(preferred, serviceRef)) return preferred;
+        var configured = properties.sinks().stream().filter(sink -> sink.serviceRef().equals(serviceRef)
+            && l3.events().serves(sink.sinkRef(), serviceRef)).toList();
+        if (configured.size() == 1) return configured.getFirst().sinkRef();
+        throw new com.netlivecowork.channel.contract.ChannelContractException(
+            com.netlivecowork.channel.contract.ChannelErrorCode.UNAVAILABLE,
+            "No unique registered event receiver for this Cowork host");
+    }
+
     private ChannelRuntime(ChannelProperties properties, Db db, L1Registry l1, L2Module l2, L3Module l3) {
         this.properties = properties;
         this.db = db;

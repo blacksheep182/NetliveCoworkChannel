@@ -79,6 +79,10 @@ public final class Db implements AutoCloseable {
         return inWriteTx(work);
     }
 
+    public boolean inTransaction() {
+        return current.get() != null;
+    }
+
     public <T> List<T> query(String sql, RowMapper<T> mapper, Object... params) {
         Connection connection = current.get();
         boolean owned = connection == null;

@@ -1,5 +1,6 @@
 package com.netlivecowork.channel.l2;
 
+import com.netlivecowork.channel.contract.VerifiedIngress;
 import com.netlivecowork.channel.contract.adapter.EntryConfig;
 import com.netlivecowork.channel.contract.adapter.StopReason;
 import com.netlivecowork.channel.contract.port.AdapterCatalog;
@@ -46,6 +47,7 @@ public final class L2Module implements AutoCloseable {
     private final SubmitService submit;
     private final GrantService grants;
     private final DurableInboxService durableInbox;
+    private final AdmissionService admission;
 
     public L2Module(Db db, Clock clock, L2Settings settings, AdapterCatalog catalog, BackendAccessPort backend,
                     SecretBox secretBox) {
@@ -61,14 +63,16 @@ public final class L2Module implements AutoCloseable {
         this.requests = new RequestRepository(db, clock);
         this.deliveries = new DeliveryRepository(db, clock);
         this.events = new EventRepository(db, clock);
-        this.grants = new GrantService(db, clock);
+        this.grants = new GrantService(db, clock, backend);
+        var hostSubscriptions = new HostSubscriptionDeliveries(db, directory, backend, grants);
+        this.grants.bindHostSubscriptions(hostSubscriptions);
         this.dispatcher = new BackendDispatcher(settings, clock, entries, directory, requests, backend, grants);
         this.groupWorkspaceGrants = new GroupWorkspaceGrantService(db, clock, entries, directory, dispatcher,ownerWeixinBindings);
         this.dispatcher.bindGroupGrants(groupWorkspaceGrants);
         CommandInterpreter interpreter = new CommandInterpreter(directory, requests, grants);
         this.submit = new SubmitService(db, clock, settings, directory, requests, deliveries, interpreter,
             dispatcher, grants, catalog, groupWorkspaceGrants, ownerWeixinBindings);
-        AdmissionService admission = new AdmissionService(clock, settings, entries, directory, requests, submit);
+        this.admission = new AdmissionService(clock, settings, entries, directory, requests, submit);
 
         HostFacilities[] hostHolder = new HostFacilities[1];
         ConnectionManager[] managerHolder = new ConnectionManager[1];
@@ -93,6 +97,7 @@ public final class L2Module implements AutoCloseable {
         this.intake = new EventIntakeService(db, clock, settings, directory, requests, events, deliveries,
             backend, registrations);
         this.intake.bindCatalog(catalog);
+        this.intake.bindHostSubscriptions(hostSubscriptions);
         this.dispatcher.bindInteractionIntake(this.intake);
         this.registrationPump = new BackendRegistrationPump(registrations, backend, clock);
         this.management = new ManagementService(db, clock, settings, entries, directory, deliveries, catalog,
@@ -143,7 +148,91 @@ public final class L2Module implements AutoCloseable {
     }
     public com.netlivecowork.channel.contract.SessionAccess.View getSessionAccess(com.netlivecowork.channel.contract.SessionAccess.Manager m) {return sessionAccess.get(managerCall(m),()->requireManager(m));}
     public com.netlivecowork.channel.contract.SessionAccess.Saved saveSessionAccess(com.netlivecowork.channel.contract.SessionAccess.Manager m,com.netlivecowork.channel.contract.SessionAccess.Save request) {return sessionAccess.save(managerCall(m),request,()->requireManager(m));}
+    public com.netlivecowork.channel.contract.SessionAccess.Saved saveSessionAccess(com.netlivecowork.channel.contract.SessionAccess.Manager m,
+            com.netlivecowork.channel.contract.SessionAccess.Save request, String service) {
+        if(request.workspaceRefs()==null)return saveSessionAccess(m,request);
+        var eligible=hostEntryWorkspaces(m,service).stream().map(com.netlivecowork.channel.contract.SessionWorkspace::sessionWorkspaceRef)
+            .collect(java.util.stream.Collectors.toSet());
+        return sessionAccess.save(managerCall(m),request,()->requireManager(m),eligible);
+    }
+    public java.util.List<String> personalCreationWorkspaces(com.netlivecowork.channel.contract.SessionAccess.Manager m) {
+        return sessionAccess.creationRefs(managerCall(m));
+    }
+    public long personalAccessGeneration(com.netlivecowork.channel.contract.SessionAccess.Manager m,String ref,boolean workspace) {
+        return sessionAccess.accessGeneration(managerCall(m),ref,workspace);
+    }
+    public boolean groupSession(String target) {
+        return db.queryOne("SELECT target_ref FROM l2_group_session_origins WHERE target_ref=?",r->r.getString(1),target)!=null;
+    }
     public com.netlivecowork.channel.contract.SessionAccess.Saved lookupSessionAccess(com.netlivecowork.channel.contract.SessionAccess.Manager m,String requestId) {return sessionAccess.lookup(managerCall(m),requestId,()->requireManager(m));}
+
+    public synchronized void registerHostEntry(com.netlivecowork.channel.contract.SessionAccess.Manager manager,
+                                               String service, String entryRef, String permission, String kind, String relayDigest) {
+        requireManager(manager);
+        var reference = EntryPermissionService.reference(service, permission);
+        if (!entryRef.matches("[A-Za-z0-9][A-Za-z0-9._~-]{0,127}")
+                || !java.util.Set.of("chat", "console").contains(kind) || !relayDigest.matches("[a-f0-9]{64}"))
+            throw new com.netlivecowork.channel.contract.ChannelContractException(
+                com.netlivecowork.channel.contract.ChannelErrorCode.INVALID_ARGUMENT, "Invalid browser entry");
+        var existing = management.findEntry(entryRef);
+        if (existing == null) {
+            existing = management.createEntry(new EntryConfig(settings.tenantRef(), settings.workspaceRef(), entryRef,
+                kind.equals("chat") ? "Web Chat" : "Web Console", "web", 1, 1, 1, true,
+                com.netlivecowork.channel.contract.json.Json.obj().put("hostRelayDigest", relayDigest),
+                java.util.Map.of(), null, reference.stored()), "web:" + entryRef);
+        }
+        var identity = directory.identity(entryRef, existing.accountBindingEpoch(), "USER", "host-web");
+        if (!existing.enabled() || !existing.channelPolicyRef().equals(reference.stored())
+                || !relayDigest.equals(existing.settings().path("hostRelayDigest").asText())
+                || (identity != null && !identity.callerRef().equals(manager.principalRef())))
+            throw new com.netlivecowork.channel.contract.ChannelContractException(
+                com.netlivecowork.channel.contract.ChannelErrorCode.PERMISSION_DENIED, "The host entry binding changed");
+        if (identity == null) {
+            requireManager(manager);
+            management.bindIdentity(entryRef, "USER", "host-web", manager.principalRef());
+        }
+    }
+
+    public java.util.List<com.netlivecowork.channel.contract.SessionWorkspace> hostEntryWorkspaces(
+            com.netlivecowork.channel.contract.SessionAccess.Manager manager, String service) {
+        return backendAccess.creationWorkspaces(managerCall(manager), service).toCompletableFuture().join();
+    }
+
+    public DirectoryRepository.DestinationRow completionDestination(
+            com.netlivecowork.channel.contract.SessionAccess.Manager manager, String service, String entryRef,
+            String permissionRef, String targetRef, String kind) {
+        requireManager(manager);
+        var entry = management.findEntry(entryRef);
+        var reference = EntryPermissionService.reference(service, permissionRef);
+        if (entry == null || !entry.enabled())
+            throw new com.netlivecowork.channel.contract.ChannelContractException(
+                com.netlivecowork.channel.contract.ChannelErrorCode.UNAVAILABLE, "The Web entry is unavailable");
+        if (!java.util.Set.of("chat", "console").contains(kind) || !"web".equals(entry.adapterType())
+                || !reference.stored().equals(entry.channelPolicyRef()))
+            throw new com.netlivecowork.channel.contract.ChannelContractException(
+                com.netlivecowork.channel.contract.ChannelErrorCode.PERMISSION_DENIED, "The Web inbox belongs to another owner");
+        var identity = directory.identity(entryRef, entry.accountBindingEpoch(), "USER", "host-web");
+        if (identity == null || !manager.principalRef().equals(identity.callerRef()))
+            throw new com.netlivecowork.channel.contract.ChannelContractException(
+                com.netlivecowork.channel.contract.ChannelErrorCode.PERMISSION_DENIED, "The Web inbox identity is no longer authorized");
+        var destination = grants.withEntryPermissions(entryRef, true, () -> {
+            if (!grants.canAct(entry.tenantRef(),entry.workspaceRef(),entryRef,manager.principalRef(),targetRef,"target.read"))
+                throw new com.netlivecowork.channel.contract.ChannelContractException(
+                    com.netlivecowork.channel.contract.ChannelErrorCode.PERMISSION_DENIED, "Channel has no access to the subscription session");
+            grants.currentHostEntry(entryRef, targetRef, null, null);
+            String destinationRef = admission.ensureDestination(entry, identity.callerRef(), identity.revision(),
+                new VerifiedIngress.Subject(VerifiedIngress.SubjectKind.USER, "host-web"),
+                VerifiedIngress.ExternalReplyTarget.personalConversation("host-web"));
+            return directory.destination(destinationRef);
+        });
+        submit.ensureCompletionSource(entry, identity.callerRef(), targetRef);
+        return destination;
+    }
+
+    public com.netlivecowork.channel.contract.SessionAccess.View hostEntrySessions(
+            com.netlivecowork.channel.contract.SessionAccess.Manager manager) {
+        return sessionAccess.available(managerCall(manager), () -> requireManager(manager));
+    }
 
     public record WeixinChallenge(String token, java.time.Instant expiresAt) {}
     public record WeixinBindingStatus(boolean bound, String weixinSubject) {}

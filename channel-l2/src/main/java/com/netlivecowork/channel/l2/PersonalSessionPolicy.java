@@ -22,6 +22,10 @@ final class PersonalSessionPolicy {
           ""","""
           CREATE TABLE IF NOT EXISTS l2_personal_session_requests(
             request_key TEXT PRIMARY KEY,request_digest TEXT NOT NULL,snapshot TEXT NOT NULL)
+          ""","""
+          CREATE TABLE IF NOT EXISTS l2_personal_creation_access(
+            tenant_ref TEXT NOT NULL,workspace_ref TEXT NOT NULL,principal_ref TEXT NOT NULL,
+            creation_refs TEXT NOT NULL,PRIMARY KEY(tenant_ref,workspace_ref,principal_ref))
           """);
     }
     record State(long revision,List<String> targets) {}
@@ -35,12 +39,42 @@ final class PersonalSessionPolicy {
     boolean allows(String tenant,String workspace,String principal,String target) {
         State s=state(tenant,workspace,principal);return s==null || s.targets().contains(target);
     }
+    boolean explicitlyAllows(String tenant,String workspace,String principal,String target) {
+        State state=state(tenant,workspace,principal);
+        return state!=null && state.targets().contains(target);
+    }
+    List<String> creationRefs(String tenant,String workspace,String principal) {
+        List<String> refs=db.queryOne("SELECT creation_refs FROM l2_personal_creation_access WHERE tenant_ref=? AND workspace_ref=? AND principal_ref=?",
+            r -> {var result=new ArrayList<String>();Json.read(r.getString(1)).forEach(value->result.add(value.asText()));return result;},tenant,workspace,principal);
+        return refs==null?List.of():List.copyOf(refs);
+    }
+    void saveCreationRefs(String tenant,String workspace,String principal,List<String> refs) {
+        Set<String> changed=new HashSet<>(creationRefs(tenant,workspace,principal));
+        for(String ref:refs)if(!changed.add(ref))changed.remove(ref);
+        for(String ref:changed)
+            db.update("""
+                INSERT INTO l2_personal_session_denials VALUES(?,?,?,?,1)
+                ON CONFLICT(tenant_ref,workspace_ref,principal_ref,target_ref) DO UPDATE SET generation=generation+1
+                """,tenant,workspace,principal,"workspace:"+ref);
+        db.update("""
+            INSERT INTO l2_personal_creation_access VALUES(?,?,?,?)
+            ON CONFLICT(tenant_ref,workspace_ref,principal_ref) DO UPDATE SET creation_refs=excluded.creation_refs
+            """,tenant,workspace,principal,Json.write(Json.mapper().valueToTree(refs)));
+    }
+    long creationGeneration(String tenant,String workspace,String principal,String ref) {
+        return generation(tenant,workspace,principal,"workspace:"+ref);
+    }
     long generation(String tenant,String workspace,String principal,String target) {
         Long g=db.queryOne("SELECT generation FROM l2_personal_session_denials WHERE tenant_ref=? AND workspace_ref=? AND principal_ref=? AND target_ref=?",
             r->r.getLong(1),tenant,workspace,principal,target);return g==null?0:g;
     }
     void replace(String tenant,String workspace,String principal,State before,List<String> selected) {
-        for(String target:before.targets()) if(!selected.contains(target)) db.update("""
+        replace(tenant,workspace,principal,before,selected,false);
+    }
+    private void replace(String tenant,String workspace,String principal,State before,List<String> selected,boolean automatic) {
+        Set<String> changedTargets=new HashSet<>(before.targets());
+        for(String target:selected)if(!changedTargets.add(target))changedTargets.remove(target);
+        for(String target:changedTargets) if(!automatic || before.targets().contains(target)) db.update("""
             INSERT INTO l2_personal_session_denials VALUES(?,?,?,?,1)
             ON CONFLICT(tenant_ref,workspace_ref,principal_ref,target_ref) DO UPDATE SET generation=generation+1
             """,tenant,workspace,principal,target);
@@ -48,5 +82,14 @@ final class PersonalSessionPolicy {
             Json.write(Json.mapper().valueToTree(selected)),tenant,workspace,principal,before.revision());
         if(changed!=1) throw new com.netlivecowork.channel.contract.ChannelContractException(
             com.netlivecowork.channel.contract.ChannelErrorCode.GRANT_REVISION_CONFLICT,"Access configuration changed; reload before saving");
+    }
+
+    void addCreated(String tenant,String workspace,String principal,String target) {
+        seed(tenant,workspace,principal,List.of());
+        var state=state(tenant,workspace,principal);
+        if(!state.targets().contains(target)) {
+            var selected=new ArrayList<>(state.targets());selected.add(target);Collections.sort(selected);
+            replace(tenant,workspace,principal,state,selected,true);
+        }
     }
 }

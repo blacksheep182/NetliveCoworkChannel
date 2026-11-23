@@ -9,7 +9,10 @@ import com.netlivecowork.channel.contract.ChannelOperation;
 import com.netlivecowork.channel.contract.ChannelResponse;
 import com.netlivecowork.channel.contract.ContentPart;
 import com.netlivecowork.channel.contract.DeliveryAttempt;
+import com.netlivecowork.channel.contract.DeliveryInbox;
 import com.netlivecowork.channel.contract.DeliveryReceipt;
+import com.netlivecowork.channel.contract.EventPayload;
+import com.netlivecowork.channel.contract.EventType;
 import com.netlivecowork.channel.contract.IngressRequest;
 import com.netlivecowork.channel.contract.IngressResolution;
 import com.netlivecowork.channel.contract.VerifiedIngress;
@@ -18,6 +21,7 @@ import com.netlivecowork.channel.contract.adapter.AdapterInstance;
 import com.netlivecowork.channel.contract.adapter.AdapterInstanceConfig;
 import com.netlivecowork.channel.contract.adapter.StopReason;
 import com.netlivecowork.channel.contract.json.Json;
+import com.netlivecowork.channel.contract.json.PacketJson;
 import com.netlivecowork.channel.contract.port.AdapterHost;
 import com.netlivecowork.channel.contract.port.DeliveryPort;
 import com.netlivecowork.channel.l1.render.PlainTextRenderer;
@@ -233,6 +237,22 @@ public final class WebAdapterInstance implements AdapterInstance, DeliveryPort, 
     }
     public com.netlivecowork.channel.contract.SessionHistory.Page queryHistory(String token, String targetRef,
             String cursor, Integer limit) {
+        if (targetRef == null) {
+            String requestId = java.util.UUID.randomUUID().toString();
+            var admission = managementAdmission(token, requestId);
+            var selection = host.ingress().submit(admission.admissionRef(), new IngressRequest(
+                IngressRequest.SUPPORTED_VERSION, requestId, admission.identity(), admission.routing(),
+                new ChannelOperation.SelectionGet())).toCompletableFuture().join();
+            if (selection instanceof ChannelResponse.Completed completed
+                    && completed.result() instanceof com.netlivecowork.channel.contract.OperationResult.SelectionGet current
+                    && current.selection().targetRef() != null) {
+                targetRef = current.selection().targetRef();
+            } else if (selection instanceof ChannelResponse.Rejected rejected) {
+                throw new ChannelContractException(ChannelErrorCode.valueOf(rejected.error().code()), rejected.error().message());
+            } else {
+                throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, "请先用 /list 和 /use 选择会话");
+            }
+        }
         var resolved=managementAdmission(token);
         return host.ingress().queryHistory(resolved.admissionRef(),new com.netlivecowork.channel.contract.SessionHistory.Request(
             targetRef,new com.netlivecowork.channel.contract.PageRequest(cursor,limit))).toCompletableFuture().join();
@@ -246,9 +266,12 @@ public final class WebAdapterInstance implements AdapterInstance, DeliveryPort, 
         return host.ingress().lookupSessionAccess(resolved.admissionRef(),requestId).toCompletableFuture().join();
     }
     private IngressResolution managementAdmission(String token) {
+        return managementAdmission(token, java.util.UUID.randomUUID().toString());
+    }
+    private IngressResolution managementAdmission(String token, String requestId) {
         String caller=authenticate(token);
         if(state!=State.ACTIVE) throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE,"Entry is not active");
-        return host.ingress().resolve(verified(java.util.UUID.randomUUID().toString(),caller)).toCompletableFuture().join();
+        return host.ingress().resolve(verified(requestId,caller)).toCompletableFuture().join();
     }
 
     /** Lookup re-resolves the authenticated caller; it never submits or replays an input. */
@@ -267,11 +290,10 @@ public final class WebAdapterInstance implements AdapterInstance, DeliveryPort, 
         return verified(requestId,callerRef,null);
     }
     private VerifiedIngress verified(String requestId, String callerRef,String viewId) {
-        ObjectNode protocolData = Json.obj().put("conversation", callerRef);
         return new VerifiedIngress(requestId, "web:" + config.entryRef(),
             new VerifiedIngress.Subject(VerifiedIngress.SubjectKind.USER, callerRef),
             new VerifiedIngress.ExternalScope(viewId==null?"web":"web-view", viewId==null?callerRef:callerRef+":"+viewId),
-            new VerifiedIngress.ExternalReplyTarget(VerifiedIngress.Audience.PERSONAL, callerRef, protocolData),
+            VerifiedIngress.ExternalReplyTarget.personalConversation(callerRef),
             requestId, null);
     }
 
@@ -305,7 +327,10 @@ public final class WebAdapterInstance implements AdapterInstance, DeliveryPort, 
     private DeliveryReceipt accept(ChannelDelivery delivery) {
         try {
             var destination=host.destinations().resolve(delivery.routing().destinationRef(),delivery.routing().destinationRevision()).toCompletableFuture().join();
-            if(!users().containsKey(destination.protocolData().path("conversation").asText()))
+            String subject = destination.protocolData().path("conversation").asText();
+            boolean known = config.settings().has(WebAdapterFactory.RELAY_DIGEST)
+                ? WebAdapterFactory.RELAY_SUBJECT.equals(subject) : users().containsKey(subject);
+            if (!known)
                 return new DeliveryReceipt.Failed(delivery.deliveryId(),ChannelErrorCode.IDENTITY_UNBOUND.error("Unknown receiver"));
             var receipt=host.inbox().append(delivery.deliveryId()).toCompletableFuture().join();
             return new DeliveryReceipt.Accepted(receipt.deliveryId(),receipt.receiptRef());
@@ -327,6 +352,23 @@ public final class WebAdapterInstance implements AdapterInstance, DeliveryPort, 
         host.inbox().acknowledge(admission.admissionRef(),request).toCompletableFuture().join();
     }
 
+    public ObjectNode renderInboxItem(DeliveryInbox.Item item) {
+        var delivery = item.delivery();
+        var packet = delivery.packet();
+        var message = Json.obj().put("sequence", item.sequence()).put("deliveryId", delivery.deliveryId())
+            .put("type", packet.type().wire()).put("sourceLabel", delivery.presentation().sourceLabel())
+            .put("text", PlainTextRenderer.body(delivery)).put("targetRef", packet.context().targetRef());
+        message.set("presentation", Json.mapper().valueToTree(delivery.presentation()));
+        var receipt = delivery.completionReceipt();
+        if (receipt != null) message.set("receipt", Json.mapper().valueToTree(receipt));
+        if (item.readAt() != null) message.put("readAt", item.readAt());
+        if (packet.payload() instanceof EventPayload.MessageReady ready)
+            message.put("messageRef", ready.message().messageRef());
+        if (packet.type().wire().startsWith("interaction.") || packet.type() == EventType.TASK_COMPLETED)
+            message.set("packet", PacketJson.enc(packet));
+        return message;
+    }
+
     /** Compatibility read only; the typed inbox API carries explicit gaps and client acknowledgements. */
     public List<Delivered> poll(String token, long afterSequence) {
         var result=readInbox(token,new com.netlivecowork.channel.contract.DeliveryInbox.Request("legacy-client-00000000",null,100));
@@ -343,6 +385,13 @@ public final class WebAdapterInstance implements AdapterInstance, DeliveryPort, 
     private String authenticate(String presentedToken) {
         if (presentedToken == null || presentedToken.isBlank()) {
             throw new SecurityException("web token is required");
+        }
+        if (config.settings().has(WebAdapterFactory.RELAY_DIGEST)) {
+            String digest = com.netlivecowork.channel.infra.Digests.sha256(presentedToken);
+            if (MessageDigest.isEqual(digest.getBytes(StandardCharsets.US_ASCII),
+                    config.settings().path(WebAdapterFactory.RELAY_DIGEST).asText().getBytes(StandardCharsets.US_ASCII)))
+                return WebAdapterFactory.RELAY_SUBJECT;
+            throw new SecurityException("invalid host relay");
         }
         byte[] presented = presentedToken.getBytes(StandardCharsets.UTF_8);
         for (Map.Entry<String, String> entry : users().entrySet()) {

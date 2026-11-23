@@ -95,27 +95,8 @@ public final class AdmissionService {
                 sharedAudience ? "SHARED" : "PERSONAL", sharedAudience));
         }
 
-        String destinationRef = null;
-        if (input.externalReplyTarget() != null) {
-            String audience = input.externalReplyTarget().audience().name();
-            JsonNode protocolData = input.externalReplyTarget().protocolData() == null
-                ? Json.obj() : input.externalReplyTarget().protocolData();
-            boolean personal = "PERSONAL".equals(audience);
-            destinationRef = "dest-" + shortHash(entry.tenantRef(), entry.workspaceRef(), entry.entryRef(),
-                String.valueOf(entry.accountBindingEpoch()), audience, input.externalReplyTarget().key(),
-                personal ? personalScope : "");
-            DirectoryRepository.DestinationRow existing = directory.destination(destinationRef);
-            if (existing == null) {
-                directory.upsertDestination(new DirectoryRepository.DestinationRow(destinationRef,
-                    entry.tenantRef(), entry.workspaceRef(), entry.entryRef(), entry.accountBindingEpoch(),
-                    personal ? callerRef : null,
-                    personal ? input.externalSubject().kind().name() : null,
-                    personal ? input.externalSubject().key() : null, audience, 1L, protocolData));
-            } else if (!existing.protocolData().equals(protocolData)) {
-                // 同一目的地身份的新协议数据：递增版本，旧积压不转发给新身份（INV-13）。
-                directory.bumpDestinationRevision(destinationRef, audience, protocolData);
-            }
-        }
+        String destinationRef = input.externalReplyTarget() == null ? null : ensureDestination(
+            entry, callerRef, bindingRevision, input.externalSubject(), input.externalReplyTarget());
 
         String admissionRef = Ids.next("adm");
         directory.saveAdmission(new DirectoryRepository.AdmissionRow(admissionRef, entry.entryRef(), callerRef,
@@ -125,6 +106,27 @@ public final class AdmissionService {
         return new IngressResolution(admissionRef,
             new IngressRequest.Identity(entry.entryRef(), callerRef),
             new IngressRequest.Routing(scopeRef, destinationRef));
+    }
+
+    String ensureDestination(EntryConfig entry, String callerRef, long bindingRevision,
+                             VerifiedIngress.Subject subject, VerifiedIngress.ExternalReplyTarget target) {
+        String audience = target.audience().name();
+        JsonNode protocolData = target.protocolData() == null ? Json.obj() : target.protocolData();
+        boolean personal = target.audience() == VerifiedIngress.Audience.PERSONAL;
+        String destinationRef = "dest-" + shortHash(entry.tenantRef(), entry.workspaceRef(), entry.entryRef(),
+            String.valueOf(entry.accountBindingEpoch()), audience, target.key(),
+            personal ? callerRef + "#" + bindingRevision : "");
+        DirectoryRepository.DestinationRow existing = directory.destination(destinationRef);
+        if (existing == null) {
+            directory.upsertDestination(new DirectoryRepository.DestinationRow(destinationRef,
+                entry.tenantRef(), entry.workspaceRef(), entry.entryRef(), entry.accountBindingEpoch(),
+                personal ? callerRef : null, personal ? subject.kind().name() : null,
+                personal ? subject.key() : null, audience, 1L, protocolData));
+        } else if (!existing.protocolData().equals(protocolData)) {
+            // 同一目的地身份的新协议数据：递增版本，旧积压不转发给新身份（INV-13）。
+            directory.bumpDestinationRevision(destinationRef, audience, protocolData);
+        }
+        return destinationRef;
     }
 
     public ChannelResponse submit(EntryConfig entry, String admissionRef, IngressRequest request) {

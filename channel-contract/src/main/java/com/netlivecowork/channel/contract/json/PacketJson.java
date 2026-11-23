@@ -403,17 +403,20 @@ public final class PacketJson {
                 node.put("revision", completed.revision());
                 node.set("resultMessageRefs", array(completed.resultMessageRefs()));
                 node.set("fileRefs", array(completed.fileRefs()));
+                putCompletion(node, completed.completion());
             }
             case EventPayload.TaskFailed failed -> {
                 node.put("revision", failed.revision());
                 node.set("error", enc(failed.error()));
                 node.set("resultMessageRefs", array(failed.resultMessageRefs()));
+                putCompletion(node, failed.completion());
             }
             case EventPayload.TaskCancelled cancelled -> {
                 node.put("revision", cancelled.revision());
                 if (cancelled.reason() != null) {
                     node.put("reason", cancelled.reason());
                 }
+                putCompletion(node, cancelled.completion());
             }
             case EventPayload.TaskArtifact artifact -> node.set("fileRefs", array(artifact.fileRefs()));
             case EventPayload.InteractionRequired required -> {
@@ -463,18 +466,18 @@ public final class PacketJson {
                 yield new EventPayload.TaskWaiting(Json.reqLong(node, "revision"), Json.optText(node, "reason"));
             }
             case TASK_COMPLETED -> {
-                Json.onlyFields(node, "revision", "resultMessageRefs", "fileRefs");
+                Json.onlyFields(node, "revision", "resultMessageRefs", "fileRefs", "completion");
                 yield new EventPayload.TaskCompleted(Json.reqLong(node, "revision"),
-                    strings(node, "resultMessageRefs"), strings(node, "fileRefs"));
+                    strings(node, "resultMessageRefs"), strings(node, "fileRefs"), completion(node));
             }
             case TASK_FAILED -> {
-                Json.onlyFields(node, "revision", "error", "resultMessageRefs");
+                Json.onlyFields(node, "revision", "error", "resultMessageRefs", "completion");
                 yield new EventPayload.TaskFailed(Json.reqLong(node, "revision"),
-                    decError(Json.obj(node, "error")), strings(node, "resultMessageRefs"));
+                    decError(Json.obj(node, "error")), strings(node, "resultMessageRefs"), completion(node));
             }
             case TASK_CANCELLED -> {
-                Json.onlyFields(node, "revision", "reason");
-                yield new EventPayload.TaskCancelled(Json.reqLong(node, "revision"), Json.optText(node, "reason"));
+                Json.onlyFields(node, "revision", "reason", "completion");
+                yield new EventPayload.TaskCancelled(Json.reqLong(node, "revision"), Json.optText(node, "reason"), completion(node));
             }
             case TASK_ARTIFACT -> {
                 Json.onlyFields(node, "fileRefs");
@@ -690,6 +693,20 @@ public final class PacketJson {
         return Json.obj().put("timeoutMs", attempt.timeoutMs());
     }
 
+    private static void putCompletion(ObjectNode node, EventPayload.TaskCompletion completion) {
+        if (completion == null) return;
+        ObjectNode value = node.putObject("completion");
+        if (completion.query() != null) value.put("query", completion.query());
+        if (completion.result() != null) value.put("result", completion.result());
+    }
+
+    private static EventPayload.TaskCompletion completion(JsonNode node) {
+        if (!node.has("completion")) return null;
+        JsonNode value = Json.obj(node, "completion");
+        Json.onlyFields(value, "query", "result");
+        return new EventPayload.TaskCompletion(Json.optText(value, "query"), Json.optText(value, "result"));
+    }
+
     // ---- delivery --------------------------------------------------------------------
 
     public static ObjectNode enc(ChannelDelivery delivery) {
@@ -761,19 +778,29 @@ public final class PacketJson {
             node.set("order", enc(event.order()));
         }
         node.set("payload", enc(event.type(), event.payload()));
+        if (event.observation() != null) {
+            var observation = event.observation();
+            node.putObject("observation").put("serviceRef", observation.serviceRef()).put("sinkRef", observation.sinkRef())
+                .put("ref", observation.ref()).put("revision", observation.revision())
+                .put("eventDigest", observation.eventDigest());
+        }
         return node;
     }
 
     public static VerifiedBackendEvent decVerifiedEvent(String json) {
         JsonNode node = Json.read(json);
         Json.onlyFields(node, "backendEventRef", "source", "operationRef", "targetRef", "taskRef", "type",
-            "occurredAt", "order", "payload");
+            "occurredAt", "order", "payload", "observation");
         EventType type = EventType.parse(Json.text(node, "type"));
         JsonNode orderNode = Json.optObj(node, "order");
+        JsonNode observed = Json.optObj(node, "observation");
+        VerifiedBackendEvent.Observation observation = observed == null ? null : new VerifiedBackendEvent.Observation(
+            Json.text(observed, "serviceRef"), Json.text(observed, "sinkRef"), Json.text(observed, "ref"),
+            Json.reqLong(observed, "revision"), Json.text(observed, "eventDigest"));
         return new VerifiedBackendEvent(Json.text(node, "backendEventRef"), decSource(Json.obj(node, "source")),
             Json.optText(node, "operationRef"), Json.optText(node, "targetRef"), Json.optText(node, "taskRef"),
             type, Json.instant(node, "occurredAt"), orderNode == null ? null : decOrder(orderNode),
-            decAgentPayload(type, Json.obj(node, "payload")));
+            decAgentPayload(type, Json.obj(node, "payload")), observation);
     }
 
     public static ObjectNode enc(AgentEvent event) {
@@ -863,18 +890,21 @@ public final class PacketJson {
                 ArrayNode ids = node.putArray("backendResultMessageIds");
                 completed.backendResultMessageIds().forEach(ids::add);
                 node.set("files", files(completed.files()));
+                putCompletion(node, completed.completion());
             }
             case AgentEventPayload.TaskFailed failed -> {
                 node.put("backendTaskId", failed.backendTaskId()).put("revision", failed.revision());
                 node.set("error", enc(failed.error()));
                 ArrayNode ids = node.putArray("backendResultMessageIds");
                 failed.backendResultMessageIds().forEach(ids::add);
+                putCompletion(node, failed.completion());
             }
             case AgentEventPayload.TaskCancelled cancelled -> {
                 node.put("backendTaskId", cancelled.backendTaskId()).put("revision", cancelled.revision());
                 if (cancelled.reason() != null) {
                     node.put("reason", cancelled.reason());
                 }
+                putCompletion(node, cancelled.completion());
             }
             case AgentEventPayload.TaskArtifact artifact -> {
                 node.put("backendTaskId", artifact.backendTaskId());
@@ -948,20 +978,20 @@ public final class PacketJson {
                     Json.reqLong(node, "revision"), Json.optText(node, "reason"));
             }
             case TASK_COMPLETED -> {
-                Json.onlyFields(node, "backendTaskId", "revision", "backendResultMessageIds", "files");
+                Json.onlyFields(node, "backendTaskId", "revision", "backendResultMessageIds", "files", "completion");
                 yield new AgentEventPayload.TaskCompleted(Json.text(node, "backendTaskId"),
-                    Json.reqLong(node, "revision"), strings(node, "backendResultMessageIds"), decFiles(node));
+                    Json.reqLong(node, "revision"), strings(node, "backendResultMessageIds"), decFiles(node), completion(node));
             }
             case TASK_FAILED -> {
-                Json.onlyFields(node, "backendTaskId", "revision", "error", "backendResultMessageIds");
+                Json.onlyFields(node, "backendTaskId", "revision", "error", "backendResultMessageIds", "completion");
                 yield new AgentEventPayload.TaskFailed(Json.text(node, "backendTaskId"),
                     Json.reqLong(node, "revision"), decError(Json.obj(node, "error")),
-                    strings(node, "backendResultMessageIds"));
+                    strings(node, "backendResultMessageIds"), completion(node));
             }
             case TASK_CANCELLED -> {
-                Json.onlyFields(node, "backendTaskId", "revision", "reason");
+                Json.onlyFields(node, "backendTaskId", "revision", "reason", "completion");
                 yield new AgentEventPayload.TaskCancelled(Json.text(node, "backendTaskId"),
-                    Json.reqLong(node, "revision"), Json.optText(node, "reason"));
+                    Json.reqLong(node, "revision"), Json.optText(node, "reason"), completion(node));
             }
             case TASK_ARTIFACT -> {
                 Json.onlyFields(node, "backendTaskId", "files");

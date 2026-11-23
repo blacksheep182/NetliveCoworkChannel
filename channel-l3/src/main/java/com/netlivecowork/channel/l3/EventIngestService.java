@@ -96,6 +96,11 @@ public final class EventIngestService {
         return ingest(sinkRef, presentedToken, 0L, 0L, bodyJson);
     }
 
+    public boolean serves(String sinkRef, String serviceRef) {
+        Sink sink = sinks.get(sinkRef);
+        return sink != null && sink.serviceRef().equals(serviceRef);
+    }
+
     /**
      * 回调入口：验证 sink/凭证与传输记录版本 → 验证事件 → 核对资源代次与原请求关联 →
      * 持久接管 → 确认（backend-http-v1 §7.1）。{@code epoch} / {@code revision} 为 0 表示调用方
@@ -115,8 +120,28 @@ public final class EventIngestService {
                 "event sink revision does not match the registered transport record"));
         }
         AgentEvent event;
+        VerifiedBackendEvent.Observation observation = null;
+        String eventJson = bodyJson;
         try {
-            event = epoch > 0 || revision > 0 ? BackendEventCodec.decode(bodyJson) : PacketJson.decAgentEvent(bodyJson);
+            var envelope = Json.read(bodyJson);
+            if (envelope.has("observation")) {
+                Json.onlyFields(envelope, "event", "observation");
+                var basis = Json.obj(envelope, "observation");
+                Json.onlyFields(basis, "ref", "revision");
+                var rawEvent = Json.obj(envelope, "event");
+                observation = new VerifiedBackendEvent.Observation(sink.serviceRef(), sinkRef,
+                    Json.text(basis, "ref"), Json.reqLong(basis, "revision"), ProtocolJson.digest(rawEvent));
+                if (epoch < 1 || revision != sink.revision()) {
+                    throw Json.invalid("Observation requires the current registered transport");
+                }
+                eventJson = Json.write(rawEvent);
+                event = BackendEventCodec.decodeSnapshot(eventJson);
+                if (event.eventType() != com.netlivecowork.channel.contract.EventType.TASK_COMPLETED) {
+                    throw Json.invalid("Unsupported subscription event");
+                }
+            } else {
+                event = epoch > 0 || revision > 0 ? BackendEventCodec.decode(bodyJson) : PacketJson.decAgentEvent(bodyJson);
+            }
         } catch (ChannelContractException e) {
             // 未知版本/类型/字段一律拒绝，不生成伪完整事件（INV-33）。
             return IngestResult.rejected(ChannelError.of(ChannelErrorCode.INVALID_ARGUMENT, e.getMessage()));
@@ -156,12 +181,15 @@ public final class EventIngestService {
             }
         }
         String resourceRef = target.resourceRef();
-        String backendEventRef = Ids.next("backend-event");
+        String backendEventRef = "backend-event-" + Digests.sha256(resourceRef + "\u0000" + event.eventId()).substring(0, 32);
         VerifiedBackendEvent verified = new VerifiedBackendEvent(backendEventRef,
             new EventSource(resourceRef, event.eventId()), operationRef, target.targetRef(), null,
-            event.eventType(), event.occurredAt(), event.order(), event.payload());
-        EventStore.InsertResult result = events.insert(new EventStore.EventDraft(backendEventRef, resourceRef,
-            event.eventId(), target.targetRef(), operationRef, requestKey, event.eventType().wire(),
+            event.eventType(), event.occurredAt(), event.order(), event.payload(), observation);
+        String receiptKey = observation == null ? event.eventId()
+            : "observation-" + Digests.sha256(event.eventId() + "\u0000" + observation.ref() + "\u0000" + observation.revision());
+        String receiptRef = observation == null ? backendEventRef : receiptKey;
+        EventStore.InsertResult result = events.insert(new EventStore.EventDraft(receiptRef, resourceRef,
+            receiptKey, target.targetRef(), operationRef, requestKey, event.eventType().wire(),
             event.occurredAt(), epoch > 0 || revision > 0 ? ProtocolJson.digest(Json.read(bodyJson)) : contentDigest(event), Json.write(PacketJson.enc(verified))));
         return switch (result) {
             case ACCEPTED, DUPLICATE -> IngestResult.accepted(event.eventId());

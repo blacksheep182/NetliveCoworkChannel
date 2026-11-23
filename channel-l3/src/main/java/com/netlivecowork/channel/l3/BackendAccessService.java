@@ -100,7 +100,72 @@ final class BackendAccessService implements com.netlivecowork.channel.contract.p
     }
 
     public CompletionStage<List<com.netlivecowork.channel.contract.SessionWorkspace>> creationWorkspaces(TrustedCall call) {
-        return CompletableFuture.supplyAsync(()->{try{return creation.workspaces(call);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE,"Workspace query interrupted");}catch(IOException e){throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE,"Workspace query unavailable");}},executor);
+        return creationWorkspaces(call, null);
+    }
+
+    @Override
+    public CompletionStage<List<com.netlivecowork.channel.contract.SessionWorkspace>> creationWorkspaces(TrustedCall call, String service) {
+        return CompletableFuture.supplyAsync(()->{try{return creation.workspaces(call, service);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE,"Workspace query interrupted");}catch(IOException e){throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE,"Workspace query unavailable");}},executor);
+    }
+
+    @Override
+    public JsonNode subscriptionEvent(String serviceRef, String ref, long revision, String eventId) {
+        var service = registry.service(serviceRef);
+        if (service == null || !service.enabled())
+            throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE, "Cowork subscription host is unavailable");
+        if (!ref.matches("sub-[a-f0-9]{32}") || revision < 1 || !eventId.matches("[A-Za-z0-9._~-]{1,128}"))
+            throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, "Invalid observed event reference");
+        try {
+            var reply = client.post(service, BackendProtocol.PREFIX + "/subscriptions/" + ref + "/event",
+                Json.write(Json.obj().put("revision", revision).put("eventId", eventId)));
+            if (reply.status() == 200) return Json.read(reply.body());
+            if (reply.status() == 401 || reply.status() == 403)
+                throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED, "The Cowork subscription no longer authorizes this event");
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        } catch (IOException error) {
+            // Undetermined permission is retried before delivery.
+        }
+        throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE, "Cowork subscription verification is unavailable");
+    }
+
+    @Override
+    public JsonNode entryPermission(String serviceRef, String permissionRef, String action, JsonNode body) {
+        var service = registry.service(serviceRef);
+        if (service == null || !service.enabled()) throw new ChannelContractException(
+            ChannelErrorCode.UNAVAILABLE, "The entry's CoWork host is unavailable");
+        if (!permissionRef.matches("ep-[a-f0-9]{32}") || !List.of("check", "created-target", "snapshot").contains(action))
+            throw new ChannelContractException(ChannelErrorCode.INVALID_ARGUMENT, "Invalid entry permission reference");
+        if (body.has("targetRef")) {
+            var target = registry.target(Json.text(body, "targetRef"));
+            if (target == null || !serviceRef.equals(target.serviceRef()))
+                throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED, "The entry refers to another host");
+            if ("created-target".equals(action))
+                ((ObjectNode) body).put("nativeSessionId", target.sessionId()).put("resourceEpoch", target.resourceEpoch());
+        }
+        try {
+            var reply = client.post(service, BackendProtocol.PREFIX + "/entry-permissions/" + permissionRef + "/" + action,
+                Json.write(body));
+            if (reply.status() == 401 || reply.status() == 403 || reply.status() == 409)
+                throw new ChannelContractException(ChannelErrorCode.PERMISSION_DENIED, "CoWork entry permission is no longer valid");
+            if (reply.status() == 200) {
+                var answer = Json.read(reply.body());
+                if ("snapshot".equals(action) && answer.path("targets") instanceof ObjectNode targets) {
+                    var refs = new ArrayList<String>();
+                    targets.fieldNames().forEachRemaining(refs::add);
+                    for (String ref : refs) {
+                        var target = registry.target(ref);
+                        if (target == null || !serviceRef.equals(target.serviceRef())) targets.remove(ref);
+                    }
+                }
+                return answer;
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        } catch (IOException ignored) {
+            // The calling operation has no permission evidence when the host cannot be reached.
+        }
+        throw new ChannelContractException(ChannelErrorCode.UNAVAILABLE, "Cannot verify the entry's CoWork authorization");
     }
     public CompletionStage<com.netlivecowork.channel.contract.SessionCreation.Created> createSession(TrustedCall call,String request,String workspace,String prompt,boolean lookupOnly) {
         return CompletableFuture.supplyAsync(()->{try{return creation.create(call,request,workspace,prompt,lookupOnly);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new ChannelContractException(ChannelErrorCode.OUTCOME_UNKNOWN,"Query the original creation request");}catch(IOException e){throw new ChannelContractException(ChannelErrorCode.OUTCOME_UNKNOWN,"Query the original creation request");}},executor);
