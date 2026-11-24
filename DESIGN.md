@@ -157,3 +157,28 @@ This page does not maintain a durable local body cache, so it sends only explici
 reload replays the server inbox. The received API is available for clients that durably apply pages.
 Credentials remain in memory. Identity changes discard old page views; server authorization remains
 authoritative on every read, acknowledgement and navigation. Source: ../channel design v2/task-notifications-and-inbox.md.
+
+## Mobile workbench
+
+Spring serves the mobile WebView entry at `/mobile.html`. It uses the same origin and `web.js`
+controller as `/web.html`. The connection dialog, native workspace select, session navigation,
+drafts, history, interaction forms, and inbox acknowledgements keep their existing owners.
+A phone opens the Channel HTTPS origin so the browser can generate request IDs in a secure context.
+
+`mobile.css` owns the mobile palette and spacing. The light canvas is #f3f5fa, conversation surfaces
+are white, text is #142039, and primary actions use cobalt #3153d3. The connection illustration pairs
+a desktop and a phone on a navy background. It appears only before a connection. Use system fonts,
+16–20px side gutters, 44px touch targets, light and dark tokens, and respect reduced motion.
+
+The mobile entry shows one full-height pane at every viewport width. A wide viewport centers the
+same app at a maximum of 460px. The catalog has a bottom create action. The conversation has a
+single header with back and status refresh controls, and a composer anchored above the safe area.
+Returning to the catalog keeps the server selection and draft. Opening the active row returns to
+its conversation without another selection request. Focus goes to the title on entry and the
+active row on return. Enter inserts a newline. The send button submits the message. An inbox
+delivery in a hidden conversation stays unread until that conversation is visible.
+
+The catalog opens a native New Session dialog. Its workspace selector uses only entries with
+`canCreate` from `workspaces/query`. Creation sends the first message with the current selection
+revision. An uncertain response remains associated with the original request and uses only the
+lookup route. A confirmed result refreshes the catalog and displays the server's selection.

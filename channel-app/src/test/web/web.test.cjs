@@ -6,7 +6,13 @@ const http=require('node:http'),fs=require('node:fs'),path=require('node:path');
 let browser,server,base;
 const source=process.env.CHANNEL_STATIC||path.resolve(__dirname,'../../main/resources/static');
 before(async()=>{
-  server=http.createServer((req,res)=>{const file=req.url==='/web.js'?'web.js':'web.html';res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':'text/html; charset=utf-8');res.end(fs.readFileSync(path.join(source,file)));});
+  const assets={'/web.html':'text/html','/web.js':'application/javascript','/mobile.html':'text/html','/mobile.css':'text/css'};
+  server=http.createServer((req,res)=>{
+    const type=assets[req.url];
+    if(!type){res.writeHead(404).end();return;}
+    res.setHeader('Content-Type',`${type}; charset=utf-8`);
+    res.end(fs.readFileSync(path.join(source,req.url.slice(1))));
+  });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));base=`http://127.0.0.1:${server.address().port}`;
   browser=await chromium.launch({channel:'msedge',headless:true});
 });
@@ -16,18 +22,23 @@ const first={workspace,targetRef:'target-1',label:'真实会话 Alpha',available
 const second={workspace,targetRef:'target-2',label:'真实会话 Beta',available:true};
 const snapshot=(ref='target-1',status='completed')=>({...([first,second].find(s=>s.targetRef===ref)||first),execution:{status,revision:17,observedAt:new Date().toISOString()}});
 async function setup(options={}){
-  const context=await browser.newContext({viewport:options.viewport||{width:1200,height:850}}),page=await context.newPage(),sent=[],polls=[],lookups=[],selections=new Map(),navigationRequests=new Map();
+  const context=await browser.newContext({viewport:options.viewport||{width:1200,height:850}}),page=await context.newPage(),sent=[],polls=[],lookups=[],acks=[],selections=new Map(),navigationRequests=new Map();
   await page.route('**/web/**',async route=>{
     const req=route.request(),url=new URL(req.url());assert.equal(req.headers().authorization,'Bearer test-token');assert.equal(url.searchParams.has('token'),false);
     const reply=body=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body)});
     if(req.method()==='GET'){
-      if(url.pathname.includes('/requests/')){lookups.push(url.pathname);return reply(navigationRequests.get(url.pathname.split('/').at(-1))||((typeof options.lookup==='function'?options.lookup():options.lookup)||{status:'accepted',taskRef:'task-1'}));}
+      if(url.pathname.includes('/requests/')){
+        lookups.push(url.pathname);
+        const saved=navigationRequests.get(url.pathname.split('/').at(-1));
+        if(saved?.result.type==='session.create'&&options.creation?.lookup)return reply(options.creation.lookup(saved));
+        return reply(saved||((typeof options.lookup==='function'?options.lookup():options.lookup)||{status:'accepted',taskRef:'task-1'}));
+      }
       polls.push(url);return reply(options.poll?options.poll(url):{messages:[],next:0,streamId:'stream-1'});
     }
     const body=req.postDataJSON(),envelope=body;
-    if(url.pathname.endsWith('/inbox/ack'))return reply({status:'completed'});
+    if(url.pathname.endsWith('/inbox/ack')){acks.push(body);return reply({status:'completed'});}
     const routes={'selection/query':'selection.get','workspaces/query':'workspace.list','workspaces/select':'workspace.select','sessions/select':'session.select',
-      'sessions/query':'session.list','sessions/get':'session.get','chat/messages':'input.submit'};
+      'sessions/query':'session.list','sessions/get':'session.get','sessions/create':'session.create','chat/messages':'input.submit'};
     const routeName=url.pathname.split('/').slice(-2).join('/'),type=routes[routeName];
     sent.push({path:url.pathname,...body});
     if(type){assert.equal(body.operation,undefined,'browser must not construct the common Channel operation');assert.match(body.viewId,/^[a-zA-Z0-9_-]{16,80}$/);}
@@ -50,6 +61,17 @@ async function setup(options={}){
       if(options.navigation)return options.navigation(route,body,reply,result,type);
       return reply(result);
     }
+    if(type==='session.create'){
+      const created=options.creation.session;
+      assert.equal(body.expectedBindingRevision,selection.revision);
+      assert.equal(body.sessionWorkspaceRef,created.workspace.sessionWorkspaceRef);
+      options.sessions.push(created);
+      selection={...selection,sessionWorkspaceRef:body.sessionWorkspaceRef,targetRef:created.targetRef,revision:selection.revision+1};
+      selections.set(envelope.viewId,selection);
+      const result={status:'completed',requestId:body.requestId,result:{type,session:created,selection}};
+      navigationRequests.set(body.requestId,result);
+      return reply(options.creation.unknown?{status:'unknown'}:result);
+    }
     if(type==='session.list')return reply({status:'completed',result:{type,items:available,
       ...(options.pages?.[body.cursor||'first']?.nextCursor?{nextCursor:options.pages[body.cursor||'first'].nextCursor}:{})}});
     if(type==='session.get')return reply(options.statusReply?options.statusReply(body):options.statusAccepted?{status:'accepted'}:
@@ -62,15 +84,103 @@ async function setup(options={}){
     if(options.submit)return options.submit(route,body,reply);
     return reply({status:'accepted',taskRef:'task-1',requestId:body.requestId});
   });
-  await page.goto(base+'/web.html');await page.locator('#entry').fill('web-test');await page.locator('#token').fill('test-token');await page.locator('#connect').click();
+  await page.goto(base+(options.mobile?'/mobile.html':'/web.html'));
+  if(options.mobile){
+    assert.equal(await page.locator('#connection-dialog').isVisible(),false);
+    await page.locator('#open-connection').click();
+  }
+  await page.locator('#entry').fill('web-test');await page.locator('#token').fill('test-token');await page.locator('#connect').click();
   await page.waitForFunction(()=>document.querySelector('#session-count').textContent.startsWith('已授权'));
   if(!options.empty&&options.chooseWorkspace!==false){await page.locator('#workspace').selectOption('sws-test');await page.waitForFunction(()=>!document.querySelector('#workspace').disabled);}
   async function choose(ref='target-1'){
     await page.getByRole('button',{name:ref==='target-1'?first.label:second.label,exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector('#check').disabled);
   }
-  return{page,context,sent,polls,lookups,choose};
+  return{page,context,sent,polls,lookups,acks,choose};
 }
+
+test('mobile panes preserve drafts and acknowledge messages only after the conversation is visible',async()=>{
+  let deliver=false;
+  const f=await setup({mobile:true,viewport:{width:390,height:844},poll:()=>({consumerRef:'phone-consumer',
+    streamId:'mobile-inbox',messages:deliver?[{sequence:1,deliveryId:'phone-message',targetRef:first.targetRef,
+      type:'message.ready',text:'这条消息在会话列表中到达。'}]:[]})});
+  const {page}=f;
+  try{
+    await page.getByRole('searchbox',{name:'搜索会话'}).fill('Alpha');
+    assert.equal(await page.getByRole('button',{name:second.label,exact:true}).count(),0);
+    await f.choose();
+    assert.equal(await page.getByRole('navigation',{name:'已授权会话'}).isVisible(),false);
+    assert.equal(await page.locator('#current').evaluate(element=>element===document.activeElement),true);
+    await page.locator('#text').fill('手机草稿');
+    await page.locator('#text').press('Enter');
+    assert.equal(await page.locator('#text').inputValue(),'手机草稿\n');
+    await page.getByRole('button',{name:'返回会话列表'}).click();
+    assert.equal(await page.locator('#text').isVisible(),false);
+    deliver=true;
+    await page.getByText('1 条新消息',{exact:true}).waitFor();
+    assert.equal(f.acks.length,0);
+    const readReceipt=page.waitForResponse(response=>response.url().endsWith('/inbox/ack'));
+    await f.choose();
+    assert.equal(await page.locator('#text').inputValue(),'手机草稿\n');
+    await page.getByText('这条消息在会话列表中到达。',{exact:true}).waitFor();
+    await readReceipt;
+    assert.deepEqual(f.acks[0].deliveryIds,['phone-message']);
+    assert.equal(f.sent.filter(request=>request.path.endsWith('/sessions/select')).length,1);
+    await page.getByRole('button',{name:'发送消息'}).click();
+    await page.getByText('消息已受理，正在等待回复。',{exact:true}).waitFor();
+    assert.equal(f.sent.find(request=>request.path.endsWith('/chat/messages')).text,'手机草稿\n');
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.setViewportSize({width:1024,height:768});
+    assert.equal(await page.locator('.mobile-shell').evaluate(element=>element.offsetWidth),460);
+    assert.equal(await page.getByRole('navigation',{name:'已授权会话'}).isVisible(),false);
+    await page.getByRole('button',{name:'返回会话列表'}).click();
+    assert.equal(await page.locator('#text').isVisible(),false);
+    const create=await page.getByRole('button',{name:'新建会话',exact:true}).boundingBox();
+    assert.ok(create.y+create.height>740,'the action remains anchored at the bottom in a wide viewport');
+  }finally{await f.context.close();}
+});
+
+test('mobile creation uses only enabled workspaces and queries the original request when the result is unknown',async()=>{
+  let resolved=false;
+  const allowed={...workspace,canCreate:true};
+  const readOnly={sessionWorkspaceRef:'sws-read-only',label:'只读工作空间',canCreate:false};
+  const added={workspace:allowed,targetRef:'created-session',label:'刚创建的手机会话',available:true};
+  const f=await setup({mobile:true,chooseWorkspace:false,viewport:{width:320,height:640},
+    workspaces:[allowed,readOnly],sessions:[first,second],
+    creation:{session:added,unknown:true,lookup:result=>resolved?result:{status:'unknown'}},
+    snapshot:ref=>ref===added.targetRef?{...snapshot(),...added}:snapshot(ref)});
+  const {page}=f;
+  try{
+    await page.getByRole('button',{name:'新建会话',exact:true}).click();
+    assert.deepEqual(await page.locator('#create-workspace option').evaluateAll(nodes=>nodes.filter(n=>n.value).map(n=>n.value)),[allowed.sessionWorkspaceRef]);
+    await page.getByRole('button',{name:'创建并发送'}).click();
+    await page.getByText('请输入第一条消息。',{exact:true}).waitFor();
+    await page.getByRole('textbox',{name:'第一条消息'}).fill('手机新建的第一条消息');
+    await page.getByRole('button',{name:'创建并发送'}).click();
+    await page.locator('#create-check').waitFor();
+    assert.equal(await page.getByRole('textbox',{name:'第一条消息'}).inputValue(),'手机新建的第一条消息');
+    const submitted=f.sent.find(request=>request.path.endsWith('/sessions/create'));
+    assert.equal(submitted.userPrompt,'手机新建的第一条消息');
+    resolved=true;
+    await page.waitForFunction(()=>document.querySelector('#create-check').hidden||!document.querySelector('#create-check').disabled);
+    if(await page.locator('#create-dialog').isVisible())await page.locator('#create-check').click();
+    await page.getByRole('heading',{name:added.label}).waitFor();
+    assert.equal(await page.locator('#create-dialog').isVisible(),false);
+    assert.equal(f.sent.filter(request=>request.path.endsWith('/sessions/create')).length,1);
+    assert.ok(f.lookups.some(path=>path.endsWith('/requests/'+submitted.requestId)));
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  }finally{await f.context.close();}
+});
+
+test('mobile creation explains when the entry has no workspace with creation permission',async()=>{
+  const f=await setup({mobile:true,chooseWorkspace:false,viewport:{width:390,height:844}});
+  try{
+    await f.page.getByRole('button',{name:'新建会话',exact:true}).click();
+    await f.page.getByText('当前入口没有可新建会话的工作空间。',{exact:false}).waitFor();
+    assert.equal(await f.page.getByRole('button',{name:'创建并发送'}).isVisible(),false);
+    assert.equal(f.sent.filter(request=>request.path.endsWith('/sessions/create')).length,0);
+  }finally{await f.context.close();}
+});
 
 test('completion from another workspace opens its authorized source and preserves the current draft',async()=>{
   let ready=false;

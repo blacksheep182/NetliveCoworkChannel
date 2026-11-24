@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#f3f5fa" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141a2a" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="在手机上查看 CoWork 已授权会话、跟进任务并继续对话。">
+  <title>CoWork 手机工作台</title>
+  <link rel="stylesheet" href="/mobile.css">
+  <script src="/web.js" defer></script>
+</head>
+<body>
+<div class="mobile-shell" data-mobile-channel data-view="catalog">
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>CoWork</span></div>
+    <div class="topbar-actions">
+      <div id="connection" class="connection-state" role="status">尚未连接</div>
+      <button id="connection-settings" type="button" class="quiet settings-button" disabled>
+        <span class="glyph sliders" aria-hidden="true"></span><span>连接设置</span>
+      </button>
+    </div>
+  </header>
+
+  <header class="chat-header" aria-label="当前会话">
+    <button id="back-to-sessions" class="quiet icon-button" type="button" aria-label="返回会话列表" disabled><span class="glyph back" aria-hidden="true"></span></button>
+    <div class="chat-heading">
+      <h1 id="current" tabindex="-1">选择一个会话</h1>
+      <p id="execution-status" class="muted" role="status">连接后，选择已授权的会话。</p>
+    </div>
+    <button id="check" class="quiet icon-button" type="button" aria-label="刷新状态" title="刷新状态" disabled><span class="glyph refresh" aria-hidden="true"></span></button>
+  </header>
+
+  <div class="system-notices">
+    <p id="notice" class="notice" role="status" hidden></p>
+    <div id="inbox-gap" class="notice" hidden>
+      <p role="status">部分收件已过期，重新同步将从仍保留的记录开始。</p>
+      <button id="inbox-resync" class="quiet" type="button" disabled>重新同步收件</button>
+    </div>
+  </div>
+
+  <div class="workbench">
+    <aside class="catalog" aria-label="会话导航">
+      <div class="welcome">
+        <div class="welcome-panel">
+          <div class="welcome-copy">
+            <h1>手机工作台</h1>
+            <p>接着聊，随时查看任务进展。</p>
+          </div>
+          <div class="connection-art" aria-hidden="true">
+            <div class="orbit orbit-outer"></div><div class="orbit orbit-inner"></div>
+            <div class="orbit-path"></div>
+            <span class="art-node art-desktop"><span></span></span>
+            <span class="art-node art-phone"><span></span></span>
+          </div>
+        </div>
+        <button id="open-connection" class="primary connect-cta" type="button" disabled>
+          连接 CoWork <span class="glyph arrow" aria-hidden="true"></span>
+        </button>
+        <p id="welcome-note" class="welcome-note" role="status">使用接入口和页面令牌，访问你在 CoWork 中已授权的会话。</p>
+      </div>
+
+      <div class="catalog-content">
+        <div class="catalog-heading">
+          <div><h1 id="catalog-title" tabindex="-1">我的会话</h1><p id="session-count" class="muted" role="status">连接后显示已授权会话</p></div>
+        </div>
+        <div class="workspace-heading">
+          <label class="field-label" for="workspace">工作空间</label>
+          <button id="refresh" class="quiet" type="button" disabled>刷新</button>
+        </div>
+        <select id="workspace" disabled><option value="">选择工作空间</option></select>
+        <button id="navigation-check" class="quiet" type="button" hidden disabled>查询切换结果</button>
+        <p id="navigation-status" class="inline-status" role="status"></p>
+        <p id="catalog-error" class="inline-status error" role="status" hidden></p>
+        <label class="search-field">
+          <span class="glyph search" aria-hidden="true"></span><span class="sr-only">搜索会话</span>
+          <input id="search" type="search" placeholder="搜索会话" disabled>
+        </label>
+        <nav id="session-list" aria-label="已授权会话"></nav>
+        <button id="more-sessions" class="quiet" type="button" hidden disabled>加载更多会话</button>
+      </div>
+      <div class="catalog-actions">
+        <button id="new-session" class="primary new-session" type="button" aria-haspopup="dialog" disabled><span class="glyph plus" aria-hidden="true"></span>新建会话</button>
+      </div>
+    </aside>
+
+    <main class="chat" aria-label="会话内容">
+      <div id="conversation" class="conversation">
+        <div id="history-controls" hidden>
+          <p id="history-status" class="muted" role="status"></p>
+          <button id="history-more" class="quiet" type="button" hidden disabled>加载更早消息</button>
+          <button id="history-retry" class="quiet" type="button" hidden disabled>重试加载记录</button>
+        </div>
+        <div id="empty" class="chat-empty">
+          <span class="empty-mark brand-mark" aria-hidden="true"></span>
+          <strong id="empty-title">与 CoWork 继续对话</strong>
+          <p id="empty-description">选择已授权的会话后，这里会显示聊天记录。</p>
+        </div>
+        <div id="log" role="log" aria-label="当前会话消息" aria-live="polite"></div>
+      </div>
+      <div class="composer-wrap">
+        <form id="compose" novalidate>
+          <label class="sr-only" for="text">消息</label>
+          <textarea id="text" class="resize-none" rows="2" placeholder="选择会话后发送消息" aria-describedby="status execution-status" disabled></textarea>
+          <button id="send" class="primary icon-button" type="submit" aria-label="发送消息" disabled><span class="glyph send" aria-hidden="true"></span></button>
+        </form>
+        <p id="status" class="inline-status" role="status"></p>
+      </div>
+    </main>
+  </div>
+
+  <aside id="task-notifications" aria-label="任务完成提醒" aria-live="polite"></aside>
+</div>
+
+<dialog id="connection-dialog" aria-labelledby="connection-title">
+  <div class="dialog-heading">
+    <h2 id="connection-title">连接 CoWork</h2>
+    <button id="close-settings" class="quiet icon-button" type="button" aria-label="关闭连接设置" disabled>×</button>
+  </div>
+  <p class="muted">请输入联调环境提供的接入口和页面令牌。</p>
+  <form id="settings" novalidate>
+    <label class="field-label" for="entry">接入口</label>
+    <input id="entry" value="web-live" placeholder="例如 web-live" autocapitalize="none" spellcheck="false" required aria-describedby="connection-feedback" autofocus>
+    <label class="field-label" for="token">页面令牌</label>
+    <div class="secret">
+      <input id="token" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="connection-feedback">
+      <button id="toggle" class="quiet" type="button" aria-label="显示页面令牌" aria-pressed="false" disabled>显示</button>
+    </div>
+    <p id="connection-feedback" class="inline-status" role="status"></p>
+    <button id="connect" class="primary" type="submit" disabled>建立连接</button>
+  </form>
+  <details>
+    <summary>在哪里授权会话？</summary>
+    <p>打开 CoWork 的「设置 → Channel 接入」，选择允许访问的会话。保存后，回到手机工作台刷新列表。</p>
+  </details>
+</dialog>
+<dialog id="create-dialog" aria-labelledby="create-title">
+  <div class="dialog-heading">
+    <h2 id="create-title">新建会话</h2>
+    <button id="close-create" class="quiet icon-button" type="button" aria-label="关闭新建会话" disabled>×</button>
+  </div>
+  <p id="create-unavailable" class="muted" hidden>当前入口没有可新建会话的工作空间。请在 CoWork 中开放创建权限后刷新列表。</p>
+  <form id="create-session-form" novalidate hidden>
+    <label class="field-label" for="create-workspace">工作空间</label>
+    <select id="create-workspace" required aria-describedby="create-feedback"></select>
+    <label class="field-label" for="create-prompt">第一条消息</label>
+    <textarea id="create-prompt" class="resize-none" rows="4" required aria-describedby="create-help create-feedback"></textarea>
+    <p id="create-help" class="muted">创建时会发送这条消息。</p>
+    <button id="create-submit" class="primary" type="submit" disabled>创建并发送</button>
+  </form>
+  <p id="create-feedback" class="inline-status" role="status"></p>
+  <button id="create-check" class="quiet" type="button" hidden disabled>查询新建结果</button>
+</dialog>
+</body>
+</html>

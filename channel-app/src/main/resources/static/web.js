@@ -1,22 +1,32 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
+  const mobileShell = document.querySelector('[data-mobile-channel]');
+  const conversationVisible = () => !mobileShell || mobileShell.dataset.view === 'conversation';
+  const sessionLocation = mobileShell ? '会话列表' : '左侧';
+  let mobileTarget = null;
+  if(mobileShell&&!globalThis.crypto?.randomUUID){
+    $('welcome-note').textContent='请通过 HTTPS 打开手机工作台，再连接 CoWork。';
+    return;
+  }
   // A fresh tab gets a fresh scope; a reload recovers this tab's existing scope.
   const reload=performance.getEntriesByType('navigation')[0]?.type==='reload';
   const viewId=reload&&sessionStorage.getItem('channel-view')||crypto.randomUUID();
   sessionStorage.setItem('channel-view',viewId);
   let restoredNavigation=null;
   try{const saved=JSON.parse(sessionStorage.getItem('channel-navigation'));if(saved?.viewId===viewId)restoredNavigation=saved;}catch(_){}
-  const state = {entry:'',token:'',generation:0,after:0,stream:'',timer:null,online:false,busy:false,
+  const state = {entry:'',token:'',generation:0,after:0,stream:'',timer:null,online:false,connecting:false,busy:false,
     viewId,workspaces:[],workspace:null,selectionRevision:0,navigationPending:restoredNavigation,navigationChecking:false,
     selected:null,sessions:[],nextCursor:null,catalogReady:false,conversations:new Map(),pending:null,
     inboxCursor:null,consumerRef:null,gap:null,notifications:new Map(),completions:new Map(),seen:new Set(),deliveries:[],failures:0,lastStatusCheck:0,lastCatalogCheck:0};
   const show = (id,text,error=false) => {$(id).textContent=text;$(id).classList.toggle('error',error);};
   const session = ref => state.sessions.find(s=>s.targetRef===ref);
   const needsWorkspace = () => state.online&&state.catalogReady&&!state.workspace&&state.workspaces.length>0;
+  const creatingSession = () => state.navigationPending?.kind==='create';
+  const creatableWorkspaces = () => state.workspaces.filter(workspace=>workspace.canCreate===true);
   function conversation(ref) {
     if (!state.conversations.has(ref)) state.conversations.set(ref,{draft:'',cards:[],unread:0,
-      interactions:new Map(),historyLoaded:false,historyLoading:false,historyCursor:null,historyError:null,historyDenied:false});
+      interactions:new Map(),readPending:new Set(),historyLoaded:false,historyLoading:false,historyCursor:null,historyError:null,historyDenied:false});
     return state.conversations.get(ref);
   }
   function notice(text) {show('notice',text);$('notice').hidden=!text;}
@@ -28,9 +38,10 @@
   }
   function executionHint() {
     if(state.navigationChecking) return '正在核对当前选择…';
-    if(state.navigationPending) return '切换结果尚未确认，请查询原请求。';
+    if(state.navigationPending) return creatingSession()?'新建结果尚未确认，请查询原请求。':'切换结果尚未确认，请查询原请求。';
     if(needsWorkspace()) return '请先选择工作空间，再选择会话。';
-    if(!state.selected) return '请从左侧选择一个已授权会话。';
+    if(!state.selected) return `请从${sessionLocation}选择一个已授权会话。`;
+    if(mobileShell&&!state.online) return '连接已中断，可返回会话列表重新连接。';
     const execution=session(state.selected)?.execution;
     if(!execution||!Number.isFinite(Date.parse(execution.observedAt))) return '尚未取得后端执行状态，请刷新状态后再发送。';
     if(Date.now()-Date.parse(execution.observedAt)>30000) return '后端执行状态已过期，正在重新同步。';
@@ -49,23 +60,36 @@
     for(const button of $('task-notifications').querySelectorAll('[data-source-navigation]'))button.disabled=$('workspace').disabled;
     $('navigation-check').hidden=!state.navigationPending;
     $('navigation-check').disabled=!state.online||state.busy;
+    $('navigation-check').textContent=creatingSession()?'查询新建结果':'查询切换结果';
     $('send').disabled=!state.online||state.busy||!!state.pending||!!executionHint();
     $('text').disabled=!state.online||!state.selected;
-    $('text').placeholder=state.selected?'发送消息…':'先从左侧选择会话';
+    $('text').placeholder=state.selected?'发送消息…':`先从${sessionLocation}选择会话`;
     $('refresh').disabled=!state.online||state.busy;
     $('check').disabled=!state.online||!state.selected||state.busy;
     $('search').disabled=!state.online;
     $('more-sessions').disabled=!state.online||state.busy;
-    $('connection-settings').disabled=state.busy||!!state.pending||!!state.navigationPending;
-    $('connect').disabled=state.busy||!!state.pending;
+    $('connection-settings').disabled=state.connecting||state.busy||!!state.pending||!!state.navigationPending;
+    $('connect').disabled=state.connecting||state.busy||!!state.pending;
     for(const button of $('session-list').querySelectorAll('button')) button.disabled=state.busy||!!state.pending||!!state.navigationPending||state.navigationChecking||!session(button.dataset.target)?.available;
     const actual=session(state.selected),execution=actual?.execution,hint=executionHint();
     show('current',actual?.label||'选择一个会话');
-    show('execution-status',hint||`${execution.input?.mode==='continue'?'已就绪 · 继续当前任务':execution.input?.mode==='deferred'?'提交后将等待子任务':executionLabel(execution)} · 更新于 ${new Date(execution.observedAt).toLocaleTimeString()}`);
+    show('execution-status',hint||`${execution.input?.mode==='continue'?'已就绪 · 继续当前任务':execution.input?.mode==='deferred'?'提交后将等待子任务':executionLabel(execution)} · 更新于 ${new Date(execution.observedAt).toLocaleTimeString()}`,Boolean(mobileShell&&state.selected&&!state.online));
     $('execution-status').classList.toggle('waiting',execution?.status==='waiting'&&!execution?.input?.allowed);
+    if(mobileShell){
+      mobileShell.toggleAttribute('data-channel-online',state.online);
+      mobileShell.toggleAttribute('data-channel-catalog',state.catalogReady);
+      $('open-connection').disabled=$('connection-settings').disabled;
+      $('new-session').disabled=!state.catalogReady||$('workspace').disabled;
+      $('create-submit').disabled=$('new-session').disabled;
+      $('create-workspace').disabled=creatingSession();
+      $('create-prompt').disabled=creatingSession();
+      $('create-check').hidden=!creatingSession();
+      $('create-check').disabled=$('navigation-check').disabled;
+    }
   }
   function renderSessions() {
     const filter=$('search').value.trim().toLocaleLowerCase();
+    const focused=mobileShell&&$('session-list').contains(document.activeElement)?document.activeElement.dataset.target:null;
     const buttons=state.sessions.filter(s=>s.label.toLocaleLowerCase().includes(filter)).map(s=>{
       const button=document.createElement('button');button.type='button';button.className='session';button.dataset.target=s.targetRef;
       button.setAttribute('aria-current',String(s.targetRef===state.selected));button.setAttribute('aria-label',s.label);
@@ -80,18 +104,23 @@
     if(!buttons.length){const empty=document.createElement('p');empty.className='hint';empty.textContent=needsWorkspace()?'请先选择工作空间':filter?'没有匹配的会话':state.catalogReady?'暂无已授权会话':'连接后加载会话';$('session-list').append(empty);}
     show('session-count',needsWorkspace()?`已授权 ${state.workspaces.length} 个工作空间 · 请选择`:state.catalogReady?`${state.workspace?'当前工作空间 · ':''}已授权 ${state.sessions.length} 个会话${state.nextCursor?' · 还有更多':''}`:'连接后显示已授权会话');
     $('more-sessions').hidden=!state.nextCursor;controls();
+    if(focused)buttons.find(button=>button.dataset.target===focused&&!button.disabled)?.focus({preventScroll:true});
   }
   function renderConversation() {
+    if(mobileShell&&mobileTarget!==state.selected){
+      mobileTarget=state.selected;
+      mobileShell.dataset.view=state.selected?'conversation':'catalog';
+    }
     refreshCompletions();
     const current=state.selected?conversation(state.selected):null;
-    if(current) current.unread=0;
+    if(current&&conversationVisible())current.unread=0;
     $('log').replaceChildren(...(current?.cards.map(card=>card.box)||[]));
     $('empty').hidden=!!current?.cards.length;
     show('empty-title',state.selected?'开始对话':needsWorkspace()?'选择一个工作空间':state.online?'选择一个会话':'与 CoWork 继续对话');
     show('empty-description',state.selected?'历史记录加载后会显示在这里，也可以发送新消息。':needsWorkspace()?
-      '从左侧选择工作空间，查看该空间内已授权的会话。':state.catalogReady&&!state.sessions.length?
-      '请在 CoWork 的“设置 → Channel 接入”中授权会话，然后刷新。':'从左侧选择已授权的真实会话，消息将发送到该会话。');
-    $('text').value=current?.draft||'';show('status','消息发送到当前选择的会话。');renderSessions();renderHistory();
+      `从${sessionLocation}选择工作空间，查看该空间内已授权的会话。`:state.catalogReady&&!state.sessions.length?
+      '请在 CoWork 的“设置 → Channel 接入”中授权会话，然后刷新。':`从${sessionLocation}选择已授权的真实会话，消息将发送到该会话。`);
+    $('text').value=current?.draft||'';show('status',mobileShell?'':'消息发送到当前选择的会话。');renderSessions();renderHistory();
   }
   function item(ref,metaText,text,user=false,messageRef=null,quiet=false) {
     const box=document.createElement('article');box.className='item'+(user?' user':'');
@@ -99,7 +128,8 @@
     const body=document.createElement('div');body.className='body';body.textContent=text;box.append(meta,body);
     const card={box,meta,body,messageRef},view=conversation(ref);view.cards.push(card);
 
-    if(ref===state.selected){$('empty').hidden=true;$('log').append(box);$('conversation').scrollTop=$('conversation').scrollHeight;}
+    if(ref===state.selected){$('empty').hidden=true;$('log').append(box);}
+    if(ref===state.selected&&conversationVisible())$('conversation').scrollTop=$('conversation').scrollHeight;
     else if(!quiet)view.unread++;
     return card;
   }
@@ -136,7 +166,7 @@
       }
       view.cards=older||!alreadyLoaded?[...added,...previous]:[...previous,...added];
       view.historyCursor=result.nextCursor||null;view.historyDenied=false;
-      if(state.selected===ref){renderConversation();pane.scrollTop=older?scroll+pane.scrollHeight-height:pane.scrollHeight;}
+      if(state.selected===ref){renderConversation();if(conversationVisible())pane.scrollTop=older?scroll+pane.scrollHeight-height:pane.scrollHeight;}
     } catch(error) {
       if(generation!==state.generation)return;
       view.historyDenied=error.status===401||error.status===403;
@@ -172,10 +202,19 @@
     $('workspace').replaceChildren(placeholder,...state.workspaces.map(w=>new Option(w.label,w.sessionWorkspaceRef)));
     $('workspace').value=state.workspace||'';
   }
-  function clearNavigation() {state.navigationPending=null;sessionStorage.removeItem('channel-navigation');show('navigation-status','');}
+  function navigationStatus(text,error=false,creation=creatingSession()) {
+    show('navigation-status',text,error);
+    if(mobileShell&&creation)show('create-feedback',text,error);
+  }
+  function clearNavigation() {navigationStatus('');state.navigationPending=null;sessionStorage.removeItem('channel-navigation');}
   async function finishNavigation(response,reconcile=false) {
+    const creation=creatingSession();
     if(response.status==='completed'||response.status==='rejected') {
-      const rejection=response.status==='rejected'?response.error?.message:null;
+      const error=response.error;
+      const creationErrors={PERMISSION_DENIED:'此工作空间未开放会话创建。',AUTH_REQUIRED:'请先在 CoWork 登录，再从手机新建会话。',BINDING_CONFLICT:'当前选择已变化，请核对工作空间后再创建。'};
+      const rejection=response.status==='rejected'?((creation&&creationErrors[error?.code])||error?.message||'请求未受理，请重试。'):null;
+      const created=creation&&response.status==='completed'?response.result?.session:null;
+      if(creation&&!rejection&&(response.result?.type!=='session.create'||!created?.targetRef))throw new Error('新建回执缺少会话信息。');
       let selection=response.result?.type==='session.select'?response.result:response.result?.selection;
       // A replay proves the write finished; a fresh lightweight read supplies today's selection.
       if(reconcile||rejection||selection?.revision<state.selectionRevision) {
@@ -185,26 +224,39 @@
       }
       const previous=state.selected,previousWorkspace=state.workspace;
       applySelection(selection);$('workspace').value=state.workspace||'';clearNavigation();
-      if(response.error?.code==='PERMISSION_DENIED'||state.workspace&&!state.workspaces.some(w=>w.sessionWorkspaceRef===state.workspace))await catalog();
+      if(created){
+        if(mobileShell){$('create-prompt').value='';$('create-dialog').close();}
+        try{await catalog(false,previous);}
+        catch(_){show(conversationVisible()?'status':'navigation-status','会话已创建，列表更新失败，请刷新。',true);return true;}
+        if(mobileShell&&state.selected===created.targetRef)$('current').focus({preventScroll:true});
+        if(state.selected!==created.targetRef)show('navigation-status','会话已创建，可从会话列表打开。');
+        return true;
+      }
+      if(error?.code==='PERMISSION_DENIED'||state.workspace&&!state.workspaces.some(w=>w.sessionWorkspaceRef===state.workspace))await catalog();
       else if(previousWorkspace!==state.workspace){state.sessions=[];state.nextCursor=null;await sessionPage(false,previous);}
       else await displaySelection(previous);
-      show('navigation-status',rejection||'已同步当前选择',!!rejection);return true;
+      navigationStatus(rejection||(mobileShell?'':'已同步当前选择'),!!rejection,creation);return true;
     }
-    show('navigation-status','切换结果未确认，请查询原请求。',true);return false;
+    navigationStatus(creation?'新建结果未确认，请查询原请求。':'切换结果未确认，请查询原请求。',true);return false;
   }
   async function checkNavigation() {
     const pending=state.navigationPending;if(!pending||state.navigationChecking)return;
     state.navigationChecking=true;
     try{await finishNavigation(await request('requests/'+encodeURIComponent(pending.requestId)),true);}
+    catch(error){if(pending.kind!=='create')throw error;navigationStatus('暂时无法查询新建结果。请稍后查询原请求。',true,true);}
     finally{state.navigationChecking=false;controls();}
   }
-  async function changeSelection(type,payload) {
+  async function changeSelection(type,payload,kind) {
     if(state.navigationPending)return;
-    const pending={requestId:crypto.randomUUID(),viewId:state.viewId,entry:state.entry};
+    const pending={requestId:crypto.randomUUID(),viewId:state.viewId,entry:state.entry,...(kind?{kind}:{})};
     state.navigationPending=pending;sessionStorage.setItem('channel-navigation',JSON.stringify(pending));controls();
-    show('navigation-status','正在确认切换…');
+    navigationStatus(kind==='create'?'正在创建会话…':'正在确认切换…');
     try{await finishNavigation(await navigationRequest(type,{...payload,expectedBindingRevision:state.selectionRevision},pending.requestId));}
-    catch(error){if(state.navigationPending)show('navigation-status','切换结果未确认，继续查询原请求。',true);else show('status',error.message,true);}
+    catch(error){
+      if(state.navigationPending)navigationStatus(kind==='create'?'新建结果未确认，继续查询原请求。':'切换结果未确认，继续查询原请求。',true);
+      else if(kind==='create')navigationStatus(error.message,true,true);
+      else show(conversationVisible()?'status':'navigation-status',error.message,true);
+    }
     finally{controls();}
   }
   async function readOperation(path,body) {
@@ -235,10 +287,23 @@
     }
   }
   async function selectSession(ref) {
-    if(!session(ref)?.available||state.selected===ref)return;
-    if(state.selected)conversation(state.selected).draft=$('text').value;
-    await changeSelection('sessions/select',{targetRef:ref});
-    if(state.selected===ref)$('text').focus();
+    if(!session(ref)?.available)return;
+    const changed=state.selected!==ref;
+    if(changed){
+      if(state.selected)conversation(state.selected).draft=$('text').value;
+      await changeSelection('sessions/select',{targetRef:ref});
+    }
+    if(state.selected!==ref)return;
+    if(mobileShell){
+      mobileShell.dataset.view='conversation';
+      const view=conversation(ref);
+      if(view.unread){
+        view.unread=0;
+        renderSessions();
+        $('conversation').scrollTop=$('conversation').scrollHeight;
+      }
+      $('current').focus({preventScroll:true});
+    }else if(changed)$('text').focus();
   }
   function receive(message) {
     if(!message.targetRef){notice('收到一条未标注会话的旧格式消息，请在 CoWork 中查看。');return;}
@@ -290,6 +355,7 @@
         await selectSession(target.targetRef);
         if(state.selected!==target.targetRef)return;
         state.notifications.delete(message.deliveryId);renderNotifications();await markRead([message.deliveryId]);
+        conversation(target.targetRef).readPending.delete(message.deliveryId);
         const completion=state.completions.get(message.deliveryId);completion?.card.box.scrollIntoView({block:'center'});
       }));
       close.addEventListener('click',()=>{state.notifications.delete(message.deliveryId);renderNotifications();});
@@ -418,8 +484,8 @@
     for(const card of conversation(target).interactions.values())if(!present.has(card.ref)&&!card.closed)closeInteraction(card,'事项已结束或已在其他客户端处理');
   }
 
-  async function catalog(append=false) {
-    const previous=state.selected;state.lastCatalogCheck=Date.now();
+  async function catalog(append=false,previous=state.selected) {
+    state.lastCatalogCheck=Date.now();
     if(!append)await navigationSnapshot();
     return sessionPage(append,previous);
   }
@@ -494,15 +560,25 @@
       // Reload replays the server inbox, while read acknowledgements only record actual viewing.
       if(state.stream&&state.stream!==result.streamId)notice('连接已恢复。服务已重启，刷新页面可以重新加载聊天记录。');
       state.stream=result.streamId||'';state.after=result.next??state.after;
+      let refreshMobileCatalog=false;
       for(const message of result.messages||[]){const key=message.deliveryId||state.stream+':'+message.sequence;
         if(message.sequence!=null&&state.seen.has(key))continue;
         if(message.sequence!=null)state.seen.add(key);
         receive(message);
-        if(message.presentation?.notification?.kind==='task_completed'&&!message.readAt&&message.targetRef!==state.selected)state.notifications.set(message.deliveryId,message);
+        if(mobileShell&&!conversationVisible()&&session(message.targetRef))refreshMobileCatalog=true;
+        if(mobileShell&&state.consumerRef&&message.deliveryId&&!message.readAt&&session(message.targetRef))
+          conversation(message.targetRef).readPending.add(message.deliveryId);
+        if(message.presentation?.notification?.kind==='task_completed'&&!message.readAt&&
+          (message.targetRef!==state.selected||!conversationVisible()))state.notifications.set(message.deliveryId,message);
       }
+      if(refreshMobileCatalog)renderSessions();
       renderNotifications();
-      const readIds=(result.messages||[]).filter(m=>m.deliveryId&&m.targetRef===state.selected&&document.visibilityState==='visible').map(m=>m.deliveryId);
-      if(readIds.length)await markRead(readIds);
+      if(document.visibilityState==='visible'&&conversationVisible()){
+        const pending=mobileShell&&state.selected?conversation(state.selected).readPending:null;
+        const readIds=mobileShell?[...(pending||[])].slice(0,50):
+          (result.messages||[]).filter(m=>m.deliveryId&&m.targetRef===state.selected).map(m=>m.deliveryId);
+        if(readIds.length){await markRead(readIds);for(const id of readIds)pending?.delete(id);}
+      }
       state.inboxCursor=result.nextCursor||state.inboxCursor;
       state.online=true;state.failures=0;connection('已连接');controls();
       if(state.navigationPending&&!state.busy)try{await checkNavigation();}catch(_){/* Never resubmit a switch. */}
@@ -515,31 +591,80 @@
         try{await catalog();}catch(error){notice(error.message);}
     }catch(error){
       if(generation!==state.generation)return;
-      state.online=false;state.failures++;connection(error.status===401?error.message:'连接中断，消息和草稿已保留。正在恢复…',true);controls();
-      if(error.status===401||state.failures>=5)return;
+      state.online=false;state.failures++;
+      const fallback=state.connecting?'连接失败，请检查网络和接入口后重试。':'连接中断，消息和草稿已保留。正在恢复…';
+      connection(error.status===401?error.message:fallback,true);controls();
+      if(state.connecting||error.status===401||state.failures>=5)return;
     }
     if(generation===state.generation)state.timer=setTimeout(()=>poll(generation),Math.min(30000,2000*2**state.failures));
   }
   async function action(work) {
     if(state.busy)return;state.busy=true;controls();
-    try{await work();}catch(error){show('status',error.message,true);}finally{state.busy=false;controls();}
+    if(mobileShell)$('catalog-error').hidden=true;
+    try{await work();}catch(error){
+      if(mobileShell&&!conversationVisible()){
+        show('catalog-error',error.message,true);$('catalog-error').hidden=false;
+      }else show('status',error.message,true);
+    }finally{state.busy=false;controls();}
   }
   $('connection-settings').addEventListener('click',()=>$('connection-dialog').showModal());
+  if(mobileShell){
+    $('open-connection').addEventListener('click',()=>$('connection-dialog').showModal());
+    $('close-create').disabled=false;
+    $('close-create').addEventListener('click',()=>$('create-dialog').close());
+    $('new-session').addEventListener('click',()=>{
+      const workspaces=creatableWorkspaces();
+      const field=$('create-workspace'),previous=field.value;
+      field.replaceChildren(new Option('选择工作空间',''),...workspaces.map(w=>new Option(w.label,w.sessionWorkspaceRef)));
+      const allowed=ref=>workspaces.some(w=>w.sessionWorkspaceRef===ref);
+      field.value=allowed(previous)?previous:allowed(state.workspace)?state.workspace:workspaces.length===1?workspaces[0].sessionWorkspaceRef:'';
+      $('create-session-form').hidden=!workspaces.length;
+      $('create-unavailable').hidden=!!workspaces.length;
+      show('create-feedback','');
+      $('create-dialog').showModal();
+    });
+    $('create-session-form').addEventListener('submit',event=>{
+      event.preventDefault();
+      if($('create-submit').disabled)return;
+      const workspace=$('create-workspace'),prompt=$('create-prompt');
+      workspace.removeAttribute('aria-invalid');prompt.removeAttribute('aria-invalid');
+      const invalid=!creatableWorkspaces().some(w=>w.sessionWorkspaceRef===workspace.value)?workspace:
+        !prompt.value.trim()||new TextEncoder().encode(prompt.value).length>65536?prompt:null;
+      if(invalid){
+        invalid.setAttribute('aria-invalid','true');invalid.focus();
+        show('create-feedback',invalid===workspace?'请选择允许新建会话的工作空间。':prompt.value.trim()?'第一条消息过长，请缩短后再发送。':'请输入第一条消息。',true);
+        return;
+      }
+      action(()=>changeSelection('sessions/create',{sessionWorkspaceRef:workspace.value,userPrompt:prompt.value},'create'));
+    });
+    $('create-check').addEventListener('click',()=>action(checkNavigation));
+    $('back-to-sessions').disabled=false;
+    $('back-to-sessions').addEventListener('click',()=>{
+      mobileShell.dataset.view='catalog';
+      const active=$('session-list').querySelector('[aria-current="true"]:enabled');
+      (active||$('catalog-title')).focus();
+    });
+  }
   $('close-settings').addEventListener('click',()=>$('connection-dialog').close());
   $('toggle').addEventListener('click',()=>{const visible=$('token').type==='password';$('token').type=visible?'text':'password';$('toggle').textContent=visible?'隐藏':'显示';$('toggle').setAttribute('aria-label',visible?'隐藏页面令牌':'显示页面令牌');$('toggle').setAttribute('aria-pressed',String(visible));});
   $('settings').addEventListener('submit',async event=>{
-    event.preventDefault();if(state.busy||state.pending)return;
+    event.preventDefault();if(state.connecting||state.busy||state.pending)return;
     const entry=$('entry').value.trim(),token=$('token').value;
     if(!entry||!token){const field=!entry?$('entry'):$('token');field.setAttribute('aria-invalid','true');field.focus();connection('请填写接入口和页面令牌。',true);return;}
     $('entry').removeAttribute('aria-invalid');$('token').removeAttribute('aria-invalid');
     if(state.selected)conversation(state.selected).draft=$('text').value;
     const changed=entry!==state.entry||token!==state.token;
     clearTimeout(state.timer);state.generation++;const generation=state.generation;
-    if(changed){state.conversations.clear();state.seen.clear();state.deliveries=[];state.notifications.clear();state.completions.clear();renderNotifications();}state.inboxCursor=null;state.consumerRef=null;state.gap=null;$('inbox-gap').hidden=true;
-    Object.assign(state,{entry,token,online:false,selected:null,workspace:null,workspaces:[],selectionRevision:0,sessions:[],nextCursor:null,catalogReady:false,stream:'',after:0,failures:0});
+    if(changed){state.conversations.clear();state.seen.clear();state.deliveries=[];state.notifications.clear();state.completions.clear();renderNotifications();if(mobileShell)$('create-prompt').value='';}state.inboxCursor=null;state.consumerRef=null;state.gap=null;$('inbox-gap').hidden=true;
+    Object.assign(state,{entry,token,online:false,connecting:true,selected:null,workspace:null,workspaces:[],selectionRevision:0,sessions:[],nextCursor:null,catalogReady:false,stream:'',after:0,failures:0});
     notice('');renderConversation();connection('正在连接…');
-    await poll(generation);
-    if(generation===state.generation&&state.online){$('connection-dialog').close();await action(()=>catalog());}
+    try{
+      await poll(generation);
+      if(generation===state.generation&&state.online){
+        $('connection-dialog').close();await action(()=>catalog());
+        if(mobileShell)$(state.selected?'current':'catalog-title').focus({preventScroll:true});
+      }
+    }finally{if(generation===state.generation){state.connecting=false;controls();}}
   });
   new ResizeObserver(entries=>document.documentElement.style.setProperty('--composer-height',entries[0].contentRect.height+'px')).observe(document.querySelector('.composer-wrap'));
   $('inbox-resync').addEventListener('click',()=>{if(!state.gap)return;state.inboxCursor=state.gap;state.gap=null;$('inbox-gap').hidden=true;$('inbox-resync').disabled=true;clearTimeout(state.timer);poll(state.generation);});
@@ -552,7 +677,7 @@
   $('history-more').addEventListener('click',()=>loadHistory(state.selected,true));
   $('history-retry').addEventListener('click',()=>loadHistory(state.selected,!!conversation(state.selected)?.historyCursor));
   $('text').addEventListener('input',()=>{if(state.selected)conversation(state.selected).draft=$('text').value;controls();});
-  $('text').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();$('compose').requestSubmit();}});
+  $('text').addEventListener('keydown',event=>{if(!mobileShell&&event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();$('compose').requestSubmit();}});
   $('compose').addEventListener('submit',event=>{
     event.preventDefault();if(!state.online||state.busy||state.pending||state.navigationPending||state.navigationChecking||!state.selected)return;
     const text=$('text').value,hint=executionHint();
@@ -575,5 +700,5 @@
     });
   });
   $('close-settings').disabled=false;$('toggle').disabled=false;
-  renderSessions();$('connection-dialog').showModal();
+  renderSessions();if(!mobileShell)$('connection-dialog').showModal();
 })();
